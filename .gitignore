@@ -31,8 +31,9 @@ models/
 # Logs
 logs/
 
-# Test documents (large .docx files)
+# Test documents (large binary files)
 test_documents/*.docx
+test_documents/*.doc
 
 # OS
 .DS_Store
