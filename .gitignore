@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Cache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Models (too large for git)
+models/
+
+# Logs
+logs/
+
+# Test documents (large .docx files)
+test_documents/*.docx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

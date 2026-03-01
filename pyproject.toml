@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-hop-qa-system"
+version = "0.1.0"
+description = "Domain-specific multi-hop QA system"
+requires-python = ">=3.12"
+dependencies = [
+    "bitsandbytes>=0.49.2",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = ["mypy", "pytest", "pytest-cov", "pytest-asyncio", "rich", "ruff"]
+dl = ["torch", "torchvision", "torchaudio"]
+llm = ["transformers", "datasets", "accelerate", "peft", "safetensors", "sentencepiece"]
+graph = ["neo4j", "py2neo"]
+api = ["fastapi", "uvicorn", "pydantic>=2.0", "httpx"]
+data = [
+    "markitdown[docx]",
+    "python-docx",
+]
+
+[tool.uv]
+default-groups = ["dev", "dl"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "api"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
