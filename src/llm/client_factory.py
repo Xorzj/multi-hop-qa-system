@@ -8,32 +8,12 @@ from src.common.config import LLMConfig
 from src.common.exceptions import ConfigError
 from src.inference.inference_engine import InferenceConfig, InferenceEngine
 from src.inference.model_loader import ModelConfig
-from src.llm.base_client import BaseLLMClient, GenerationParams
+from src.llm.base_client import BaseLLMClient
 from src.llm.local_client import LocalLLMClient
+from src.llm.openai_client import OpenAIClient
 from src.llm.zhipu_client import ZhipuClient
 
-
-class OpenAIClient(BaseLLMClient):
-    def __init__(self, config: LLMConfig) -> None:
-        self.config = config
-
-    async def generate(
-        self,
-        prompt: str,
-        params: GenerationParams | None = None,
-    ) -> str:
-        raise NotImplementedError("TODO: implement")
-
-    async def chat(
-        self,
-        messages: list[dict[str, str]],
-        params: GenerationParams | None = None,
-    ) -> str:
-        raise NotImplementedError("TODO: implement")
-
-    @property
-    def provider(self) -> str:
-        raise NotImplementedError("TODO: implement")
+__all__ = ["OpenAIClient", "create_llm_client"]
 
 
 def create_llm_client(config: LLMConfig) -> BaseLLMClient:
@@ -52,9 +32,12 @@ def create_llm_client(config: LLMConfig) -> BaseLLMClient:
     if config.provider == "openai":
         return OpenAIClient(config)
     if config.provider == "zhipu":
-        api_key = os.getenv("ZHIPU_API_KEY", "")
+        api_key = config.api_key or os.getenv("ZHIPU_API_KEY", "")
         if not api_key:
-            raise ConfigError("ZHIPU_API_KEY is required for Zhipu provider")
+            raise ConfigError(
+                "llm.api_key is required in config.toml for Zhipu provider "
+                "(or set ZHIPU_API_KEY environment variable)"
+            )
         model_name = config.model_path or "glm-4-flash"
         return ZhipuClient(api_key=api_key, model=model_name)
     raise ConfigError(f"Unknown LLM provider: {config.provider}")

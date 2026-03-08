@@ -5,7 +5,7 @@ from typing import Any
 
 from src.common.exceptions import LLMError
 from src.common.logger import get_logger
-from src.llm.base_client import BaseLLMClient, GenerationParams
+from src.llm.base_client import BaseLLMClient, GenerationParams, post_with_retry
 
 logger = get_logger(__name__)
 
@@ -67,9 +67,14 @@ class ZhipuClient(BaseLLMClient):
         url = f"{self._base_url}/chat/completions"
 
         try:
-            async with httpx_module.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
+            response = await post_with_retry(
+                httpx_module,
+                url,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+                provider_name="Zhipu",
+            )
         except httpx_module.HTTPStatusError as exc:
             detail = exc.response.text
             logger.error(
@@ -85,7 +90,13 @@ class ZhipuClient(BaseLLMClient):
 
         try:
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
+            message = data["choices"][0]["message"]
+            raw_content = message.get("content")
+            content = raw_content if isinstance(raw_content, str) else ""
+            # Thinking models (e.g. glm-4.7-flash) put output in reasoning_content
+            if not content.strip():
+                fallback = message.get("reasoning_content")
+                content = fallback if isinstance(fallback, str) else ""
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             logger.error(
                 "Unexpected Zhipu API response format",
