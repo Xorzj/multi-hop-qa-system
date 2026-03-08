@@ -117,6 +117,44 @@ def test_question_parser_parse_response_invalid_json_fallback(
     assert parsed.relation_hints == []
     assert parsed.constraints == {}
 
+def test_question_parser_fallback_extracts_acronyms(llm_factory: callable) -> None:
+    """Generic acronym patterns: TCP, HTTP-2, ACID."""
+    parser = QuestionParser(llm_factory("not used"))
+    parsed = parser._parse_response("not json", original="TCP和HTTP-2是什么关系")
+    assert "TCP" in parsed.entities
+    assert "HTTP-2" in parsed.entities
+
+
+def test_question_parser_fallback_extracts_standards(llm_factory: callable) -> None:
+    """Standards like G.709, X.25."""
+    parser = QuestionParser(llm_factory("not used"))
+    parsed = parser._parse_response("not json", original="G.709标准的作用是什么")
+    assert "G.709" in parsed.entities
+
+
+def test_question_parser_fallback_extracts_camelcase(llm_factory: callable) -> None:
+    """CamelCase identifiers like PostgreSQL, FastAPI."""
+    parser = QuestionParser(llm_factory("not used"))
+    parsed = parser._parse_response("not json", original="PostgreSQL和MongoDB哪个好")
+    camel_entities = [e for e in parsed.entities if e in ("PostgreSQL", "MongoDB")]
+    assert len(camel_entities) >= 1
+
+
+def test_question_parser_fallback_extracts_measurements(llm_factory: callable) -> None:
+    """Measurement values like 10Gb/s, 100MHz."""
+    parser = QuestionParser(llm_factory("not used"))
+    parsed = parser._parse_response("not json", original="10Gb/s和100MHz的关系")
+    # Measurements should be captured
+    measurement_entities = [e for e in parsed.entities if "Gb/s" in e or "MHz" in e]
+    assert len(measurement_entities) >= 1
+
+
+def test_question_parser_fallback_no_optical_hardcode(llm_factory: callable) -> None:
+    """Medical domain entities should work via generic acronym patterns."""
+    parser = QuestionParser(llm_factory("not used"))
+    parsed = parser._parse_response("not json", original="DNA和RNA的区别")
+    assert "DNA" in parsed.entities
+    assert "RNA" in parsed.entities
 
 @pytest.mark.asyncio
 async def test_question_parser_parse_empty_question(llm_factory: callable) -> None:
@@ -144,7 +182,7 @@ def test_context_assembler_formats_prompt(
         question, evidence_chain, include_reasoning=True
     )
     assert assembled.question == question
-    assert "路径:" in assembled.evidence_summary
+    assert "<evidence_chain" in assembled.evidence_summary
     assert "SDH" in assembled.evidence_summary
     assert "STM-1" in assembled.evidence_summary
     assert assembled.evidence_confidence == pytest.approx(0.8)

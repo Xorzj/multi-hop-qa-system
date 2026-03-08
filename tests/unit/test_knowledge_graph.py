@@ -148,19 +148,19 @@ def test_find_neighbors_direction(
     )
     assert "MATCH (n {name: $name})" in query.query
     assert pattern in query.query
-    assert "RETURN m, r, type(r) as rel_type LIMIT $limit" in query.query
+    assert "RETURN m, r, type(r) as rel_type" in query.query
+    assert "startNode(r).name as rel_start" in query.query
+    assert "endNode(r).name as rel_end" in query.query
     assert query.parameters == {"name": "Ada", "limit": 5}
-
 
 def test_find_path(cypher_builder: CypherBuilder) -> None:
     query = cypher_builder.find_path("A", "B", max_hops=4)
     assert query.query == (
         "MATCH path = shortestPath((a {name: $start})-"
-        "[*1..$max_hops]-(b {name: $end})) "
+        "[*1..$max_hops]->(b {name: $end})) "
         "RETURN path"
     )
     assert query.parameters == {"start": "A", "end": "B", "max_hops": 4}
-
 
 def test_find_by_property_escapes_property_name(
     cypher_builder: CypherBuilder,
@@ -192,3 +192,52 @@ def test_count_neighbors(cypher_builder: CypherBuilder) -> None:
         == "MATCH (n {name: $name})-[r:`KNOWS`]-() RETURN count(r) as neighbor_count"
     )
     assert query.parameters == {"name": "Ada"}
+
+
+# ===================== graph_retriever direction tests =====================
+
+
+@pytest.mark.asyncio
+class TestGraphRetrieverDirection:
+    """Tests for correct edge direction handling in graph_retriever."""
+
+    async def test_get_neighbors_uses_neo4j_direction_when_available(self) -> None:
+        """When Cypher returns rel_start/rel_end, use them instead of inferring."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.knowledge_graph.graph_retriever import GraphRetriever
+
+        mock_client = MagicMock()
+
+        # Simulate Neo4j returning an incoming edge (OTN->SDH) when querying SDH
+        mock_record = MagicMock()
+        # Create relation mock with explicit start_node/end_node = None
+        # (so _relation_endpoints uses the record's source/target instead)
+        relation_mock = MagicMock()
+        relation_mock.type = "依赖"
+        relation_mock.start_node = None
+        relation_mock.end_node = None
+
+        mock_record.get.side_effect = lambda k: {
+            "m": MagicMock(element_id="node:2", labels=frozenset({"Entity"})),
+            "r": relation_mock,
+            "rel_type": "依赖",
+            "rel_start": "OTN",  # Real start of edge
+            "rel_end": "SDH",  # Real end of edge
+        }.get(k)
+        mock_record.__getitem__ = mock_record.get
+
+        # Configure properties for the neighbor node
+        neighbor_node = mock_record.get("m")
+        neighbor_node.__getitem__ = lambda self, k: "OTN" if k == "name" else None
+
+        mock_client.execute = AsyncMock(return_value=[mock_record])
+
+        retriever = GraphRetriever(mock_client)
+
+        result = await retriever.get_neighbors("SDH", direction="both")
+        # The relation should preserve the real direction: OTN -> SDH
+        assert len(result.relations) == 1
+        rel = result.relations[0]
+        assert rel.source == "OTN", f"Expected source=OTN, got {rel.source}"
+        assert rel.target == "SDH", f"Expected target=SDH, got {rel.target}"

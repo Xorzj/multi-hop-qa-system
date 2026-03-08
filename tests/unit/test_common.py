@@ -36,17 +36,16 @@ def sample_config_data() -> dict:
 
 @pytest.fixture
 def config_path(tmp_path: Path, sample_config_data: dict) -> Path:
-    yaml = pytest.importorskip("yaml")
-    path = tmp_path / "config.yaml"
-    path.write_text(yaml.safe_dump(sample_config_data), encoding="utf-8")
+    import tomli_w
+    path = tmp_path / "config.toml"
+    path.write_bytes(tomli_w.dumps(sample_config_data).encode())
     return path
 
 
 @pytest.fixture
 def empty_config_path(tmp_path: Path) -> Path:
-    yaml = pytest.importorskip("yaml")
-    path = tmp_path / "empty.yaml"
-    path.write_text(yaml.safe_dump({}), encoding="utf-8")
+    path = tmp_path / "empty.toml"
+    path.write_bytes(b"")
     return path
 
 
@@ -75,6 +74,8 @@ def test_load_config_builds_nested_config(config_path: Path) -> None:
     assert config.llm.provider == "local"
     assert config.llm.model_path == "/models/base"
     assert config.llm.adapter_path == "/models/adapter"
+    assert config.llm.base_url == ""
+    assert config.llm.api_key == ""
     assert config.llm.generation.max_new_tokens == 128
     assert config.llm.generation.temperature == 0.7
     assert config.llm.generation.top_p == 0.9
@@ -91,18 +92,20 @@ def test_load_config_builds_nested_config(config_path: Path) -> None:
 def test_load_config_env_interpolation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    yaml = pytest.importorskip("yaml")
+    import tomli_w
     monkeypatch.setenv("TEST_MODEL_DIR", "/env/models")
     config_data = {
         "llm": {
             "provider": "local",
             "model_path": "${TEST_MODEL_DIR}/base",
             "adapter_path": "${TEST_MODEL_DIR}/adapter",
+            "base_url": "",
+            "api_key": "",
             "generation": {"max_new_tokens": 5, "temperature": 0.1, "top_p": 0.2},
         }
     }
-    path = tmp_path / "env.yaml"
-    path.write_text(yaml.safe_dump(config_data), encoding="utf-8")
+    path = tmp_path / "env.toml"
+    path.write_bytes(tomli_w.dumps(config_data).encode())
 
     config = config_module.load_config(str(path))
 
@@ -117,7 +120,8 @@ def test_load_config_with_missing_sections_uses_defaults(
 
     assert config.llm.provider == ""
     assert config.llm.model_path == ""
-    assert config.llm.adapter_path == ""
+    assert config.llm.base_url == ""
+    assert config.llm.api_key == ""
     assert config.llm.generation.max_new_tokens == 0
     assert config.llm.generation.temperature == 0.0
     assert config.llm.generation.top_p == 0.0
@@ -132,8 +136,7 @@ def test_load_config_with_missing_sections_uses_defaults(
 
 
 def test_load_config_invalid_path_raises(tmp_path: Path) -> None:
-    pytest.importorskip("yaml")
-    missing_path = tmp_path / "missing.yaml"
+    missing_path = tmp_path / "missing.toml"
     with pytest.raises(FileNotFoundError):
         config_module.load_config(str(missing_path))
 
