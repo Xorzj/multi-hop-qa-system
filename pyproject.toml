@@ -13,7 +13,15 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["mypy", "pytest", "pytest-cov", "pytest-asyncio", "rich", "ruff"]
+dev = [
+    "mypy",
+    "pytest",
+    "pytest-cov",
+    "pytest-asyncio",
+    "rich",
+    "ruff",
+    "tomli-w>=1.2.0",
+]
 dl = ["torch", "torchvision", "torchaudio"]
 llm = ["transformers", "datasets", "accelerate", "peft", "safetensors", "sentencepiece"]
 graph = ["neo4j", "py2neo"]

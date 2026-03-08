@@ -42,3 +42,9 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# API credentials
+openai.api
+
+# Auth secrets (persistent, never commit)
+config/auth.json

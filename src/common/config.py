@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG_PATH = "config/config.yaml"
+DEFAULT_CONFIG_PATH = "config/config.toml"
+
+AUTH_FILE_PATH = "config/auth.json"
 
 
 @dataclass
@@ -19,8 +23,9 @@ class LLMConfig:
     provider: str
     model_path: str
     adapter_path: str
+    base_url: str
+    api_key: str
     generation: GenerationConfig
-
 
 @dataclass
 class GraphConfig:
@@ -68,9 +73,40 @@ class Config:
     extraction: ExtractionConfig
 
 
+def _load_auth_store(path: str = AUTH_FILE_PATH) -> dict[str, str]:
+    """Load secrets from auth.json. Returns empty dict if file missing."""
+    auth_path = Path(path)
+    if not auth_path.exists():
+        return {}
+    with open(auth_path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return {}
+    return {k: str(v) for k, v in data.items()}
+
+
+_auth_store: dict[str, str] | None = None
+
+
+def _get_auth_store() -> dict[str, str]:
+    """Lazy-load auth store (cached)."""
+    global _auth_store  # noqa: PLW0603
+    if _auth_store is None:
+        _auth_store = _load_auth_store()
+    return _auth_store
+
+
+def _resolve_variable(var_name: str) -> str:
+    """Resolve a variable: auth.json first, then env var."""
+    auth = _get_auth_store()
+    if var_name in auth:
+        return auth[var_name]
+    return os.environ.get(var_name, "")
 def _interpolate_env_values(value: Any) -> Any:
+    """Replace ${VAR} placeholders: auth.json > env var > empty string."""
     if isinstance(value, str):
-        return os.path.expandvars(value)
+        import re
+        return re.sub(r"\$\{([^}]+)\}", lambda m: _resolve_variable(m.group(1)), value)
     if isinstance(value, dict):
         return {key: _interpolate_env_values(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -78,17 +114,10 @@ def _interpolate_env_values(value: Any) -> Any:
     return value
 
 
-def _require_yaml() -> Any:
-    try:
-        import yaml  # type: ignore
-    except ModuleNotFoundError as exc:
-        message = (
-            "PyYAML is required to load configuration. "
-            "Install it with `uv add pyyaml` or `pip install pyyaml`."
-        )
-        raise ModuleNotFoundError(message) from exc
-    return yaml
 
+def _require_tomllib() -> Any:
+    import tomllib
+    return tomllib
 
 def _build_config(data: dict[str, Any]) -> Config:
     llm_data = data.get("llm", {})
@@ -97,6 +126,8 @@ def _build_config(data: dict[str, Any]) -> Config:
         provider=llm_data.get("provider", ""),
         model_path=llm_data.get("model_path", ""),
         adapter_path=llm_data.get("adapter_path", ""),
+        base_url=llm_data.get("base_url", ""),
+        api_key=llm_data.get("api_key", ""),
         generation=GenerationConfig(
             max_new_tokens=generation_data.get("max_new_tokens", 0),
             temperature=generation_data.get("temperature", 0.0),
@@ -143,8 +174,8 @@ def _build_config(data: dict[str, Any]) -> Config:
 
 
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> Config:
-    yaml = _require_yaml()
-    with open(path, encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+    tomllib = _require_tomllib()
+    with open(path, "rb") as handle:
+        data = tomllib.load(handle)
     interpolated = _interpolate_env_values(data)
     return _build_config(interpolated)
