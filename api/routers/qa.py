@@ -90,6 +90,7 @@ def _map_generated_answer(
         evidence=_convert_evidence_chain(evidence),
         reasoning_steps=generated.reasoning_steps,
         latency_ms=generated.latency_ms,
+        evidence_xml=evidence.to_xml() if evidence.edges or evidence.nodes else None,
     )
 
 

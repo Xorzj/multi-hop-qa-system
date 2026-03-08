@@ -25,6 +25,7 @@ class AnswerResponse(BaseModel):
     evidence: list[Evidence]
     reasoning_steps: list[str] | None = Field(default=None)
     latency_ms: float
+    evidence_xml: str | None = Field(default=None)
 
 
 class TaskStatus(StrEnum):
