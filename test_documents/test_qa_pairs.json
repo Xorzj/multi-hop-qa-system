@@ -1,0 +1,133 @@
+{
+  "medical_basics": {
+    "document": "test_documents/medical_basics.docx",
+    "questions": [
+      {
+        "question": "高血压如何通过血管内皮损伤发展为冠心病，并通常需要哪些药物干预？",
+        "expected_entities": [
+          "高血压",
+          "血管内皮",
+          "动脉粥样硬化",
+          "冠心病",
+          "他汀"
+        ],
+        "expected_hops": 3
+      },
+      {
+        "question": "糖尿病导致肾损伤后，为什么会推荐ACEI或ARB？",
+        "expected_entities": [
+          "糖尿病",
+          "肾脏",
+          "蛋白尿",
+          "ACEI"
+        ],
+        "expected_hops": 2
+      },
+      {
+        "question": "心绞痛的常见症状是什么，常用哪类药物缓解？",
+        "expected_entities": [
+          "心绞痛",
+          "胸痛",
+          "硝酸甘油"
+        ],
+        "expected_hops": 1
+      },
+      {
+        "question": "为什么高血糖会引发周围神经病变，常见的辅助治疗是什么？",
+        "expected_entities": [
+          "高血糖",
+          "周围神经病变",
+          "维生素B族"
+        ],
+        "expected_hops": 2
+      }
+    ]
+  },
+  "database_systems": {
+    "document": "test_documents/database_systems.docx",
+    "questions": [
+      {
+        "question": "SQL查询如何通过优化器选择索引来提升性能？",
+        "expected_entities": [
+          "SQL",
+          "优化器",
+          "执行计划",
+          "索引"
+        ],
+        "expected_hops": 2
+      },
+      {
+        "question": "ACID中的持久性依赖哪些机制，为什么与崩溃恢复相关？",
+        "expected_entities": [
+          "持久性",
+          "重做日志",
+          "崩溃恢复"
+        ],
+        "expected_hops": 2
+      },
+      {
+        "question": "InnoDB为何适合OLTP场景？",
+        "expected_entities": [
+          "InnoDB",
+          "行级锁",
+          "OLTP"
+        ],
+        "expected_hops": 1
+      },
+      {
+        "question": "MongoDB的副本集与分片分别解决了什么问题？",
+        "expected_entities": [
+          "MongoDB",
+          "副本集",
+          "高可用",
+          "分片",
+          "水平扩展"
+        ],
+        "expected_hops": 2
+      }
+    ]
+  },
+  "renewable_energy": {
+    "document": "test_documents/renewable_energy.docx",
+    "questions": [
+      {
+        "question": "光伏系统中逆变器如何与并网保护配合保证电能质量？",
+        "expected_entities": [
+          "光伏组件",
+          "逆变器",
+          "并网保护",
+          "电能质量"
+        ],
+        "expected_hops": 2
+      },
+      {
+        "question": "风电输出波动时储能如何参与调频以稳定电网？",
+        "expected_entities": [
+          "风电",
+          "储能",
+          "调频",
+          "电网稳定"
+        ],
+        "expected_hops": 2
+      },
+      {
+        "question": "磷酸铁锂电池为什么需要BMS监测？",
+        "expected_entities": [
+          "磷酸铁锂",
+          "电池管理系统",
+          "过充过放"
+        ],
+        "expected_hops": 1
+      },
+      {
+        "question": "新能源基地通过哪种输电方式向负荷中心送电？",
+        "expected_entities": [
+          "新能源基地",
+          "高压直流输电",
+          "负荷中心"
+        ],
+        "expected_hops": 2
+      }
+    ]
+  }
+}
