@@ -72,11 +72,18 @@ class GraphRetriever:
             rel_type = record.get("rel_type")
             if neighbor is not None:
                 nodes.append(self._parse_node({"_node": neighbor}))
-            source, target = self._infer_relation_endpoints(
-                node_name=node_name,
-                neighbor=neighbor,
-                direction=direction,
-            )
+            # 优先使用 Cypher 返回的真实方向
+            rel_start = record.get("rel_start")
+            rel_end = record.get("rel_end")
+            if rel_start is not None and rel_end is not None:
+                source, target = str(rel_start), str(rel_end)
+            else:
+                # 回退到推断方向（仅当 Cypher 不返回方向信息时）
+                source, target = self._infer_relation_endpoints(
+                    node_name=node_name,
+                    neighbor=neighbor,
+                    direction=direction,
+                )
             if relation is not None:
                 relation_record = {
                     "_relation": relation,

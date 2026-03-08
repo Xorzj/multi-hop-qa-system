@@ -35,7 +35,8 @@ class CypherBuilder:
         query = (
             "MATCH (n {name: $name})"
             f"{left}[r{rel_type}]{right}(m) "
-            "RETURN m, r, type(r) as rel_type "
+            "RETURN m, r, type(r) as rel_type, "
+            "startNode(r).name as rel_start, endNode(r).name as rel_end "
             "LIMIT $limit"
         )
         return CypherQuery(query=query, parameters={"name": node_name, "limit": limit})
@@ -45,7 +46,7 @@ class CypherBuilder:
     ) -> CypherQuery:
         query = (
             "MATCH path = shortestPath("
-            "(a {name: $start})-[*1..$max_hops]-(b {name: $end})"
+            "(a {name: $start})-[*1..$max_hops]->(b {name: $end})"
             ") RETURN path"
         )
         return CypherQuery(
