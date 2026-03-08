@@ -174,9 +174,20 @@ class DocumentLoader:
         return self._split_long_section(text, max_size)
 
     def _split_long_section(self, text: str, max_size: int) -> list[str]:
-        """Split by paragraphs → sentences → characters."""
+        """Split by paragraphs → sentences → characters.
 
+        Uses hierarchical separators: ``\\n\\n`` → ``\\n`` → sentence
+        punctuation → fixed-window characters.
+        """
+
+        # Try double-newline first (standard markdown paragraph break)
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+        # Fallback: single newline (common in Chinese docs / markitdown output)
+        if len(paragraphs) <= 1:
+            single = [p.strip() for p in text.split("\n") if p.strip()]
+            if len(single) > len(paragraphs):
+                paragraphs = single
 
         # If every paragraph fits, just merge small ones together
         if all(len(p) <= max_size for p in paragraphs):
@@ -251,9 +262,39 @@ class DocumentLoader:
         return merged
 
     def _split_plain_text(self, text: str, max_size: int) -> list[Section]:
-        """Fallback for documents with no markdown headings."""
+        """Fallback for documents with no markdown headings.
 
-        chunks = self._ensure_size(text, max_size)
+        Always detects paragraph boundaries (``\\n\\n`` then ``\\n``)
+        before falling back to size-based splitting, so that chunks
+        respect the natural structure of the document.
+        """
+
+        # Detect paragraphs: prefer \n\n, fallback to \n
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        has_strong_breaks = len(paragraphs) > 1
+        if not has_strong_breaks:
+            paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+
+        if len(paragraphs) > 1:
+            # Split oversized paragraphs by sentences
+            pieces: list[str] = []
+            for para in paragraphs:
+                if len(para) <= max_size:
+                    pieces.append(para)
+                else:
+                    pieces.extend(self._split_by_sentences(para, max_size))
+            if has_strong_breaks:
+                # \n\n = explicit paragraph boundary → each paragraph
+                # stays as its own section (no merging)
+                chunks = pieces
+            else:
+                # \n = weaker boundary → merge small lines together
+                merge_target = max(max_size // 3, 300)
+                chunks = self._merge_small(pieces, merge_target)
+        else:
+            # No paragraph breaks at all — pure size-based splitting
+            chunks = self._ensure_size(text, max_size)
+
         return [
             Section(content=c, heading_chain=[], level=0, index=i)
             for i, c in enumerate(chunks)
