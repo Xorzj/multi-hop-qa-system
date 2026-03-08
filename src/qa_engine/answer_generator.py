@@ -62,7 +62,7 @@ class AnswerGenerator:
     ) -> GeneratedAnswer:
         prompt = "\n".join(
             [
-                "你是一个专业的光通信领域问答助手。请基于以下上下文回答问题。",
+                "你是一个专业的知识问答助手。请基于以下上下文回答问题。",
                 "",
                 "## 用户问题",
                 question,

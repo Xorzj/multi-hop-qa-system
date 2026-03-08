@@ -49,19 +49,7 @@ class ContextAssembler:
         )
 
     def _summarize_evidence(self, evidence: EvidenceChain) -> str:
-        path_description = evidence.get_path_description()
-        entity_descriptions = self._describe_entities(evidence)
-        lines = [f"路径: {path_description}", "", "实体信息:"]
-        if not entity_descriptions:
-            lines.append("- 暂无实体信息")
-            return "\n".join(lines)
-
-        for name, description in entity_descriptions.items():
-            if description:
-                lines.append(f"- {name}: {description}")
-            else:
-                lines.append(f"- {name}: 描述缺失")
-        return "\n".join(lines)
+        return evidence.to_xml()
 
     def _format_reasoning_steps(self, evidence: EvidenceChain) -> list[str]:
         steps: list[str] = []
@@ -103,7 +91,7 @@ class ContextAssembler:
             "## 用户问题",
             question,
             "",
-            "## 知识图谱证据",
+            "## 知识图谱证据（XML结构化格式）",
             evidence_summary,
         ]
 
@@ -117,6 +105,7 @@ class ContextAssembler:
                 "- 基于证据准确回答问题",
                 "- 如果证据不足，明确说明",
                 "- 使用专业但易懂的语言",
+                "- 在回答末尾，引用证据链中的关键路径作为支撑（格式：[证据: 实体A --关系--> 实体B]）",
                 "",
                 "请回答：",
             ]

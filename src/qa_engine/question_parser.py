@@ -64,30 +64,29 @@ class QuestionParser:
 
     def _build_prompt(self, question: str) -> str:
         return (
-            "你是光通信/SDH领域的问题解析助手。"
+            "你是知识图谱问题解析助手。"
             "从问题中抽取意图、实体、关系提示和约束，并仅返回JSON对象。"
             "意图枚举：FIND_ENTITY、FIND_RELATION、FIND_PATH、COMPARE、EXPLAIN、COUNT、LIST。"
             "示例：\n"
-            "问题：SDH和STM-1什么关系\n"
+            "问题：A和B什么关系\n"
             "返回："
-            '{"intent":"FIND_RELATION","entities":["SDH","STM-1"],'
-            '"relation_hints":["使用","包含"],"constraints":{"max_hops":2}}\n'
-            "问题：SDH是什么\n"
-            '返回：{"intent":"EXPLAIN","entities":["SDH"],'
+            '{"intent":"FIND_RELATION","entities":["A","B"],'
+            '"relation_hints":["关联","包含"],"constraints":{"max_hops":2}}\n'
+            "问题：X是什么\n"
+            '返回：{"intent":"EXPLAIN","entities":["X"],'
             '"relation_hints":[],"constraints":{}}\n'
-            "问题：哪些设备使用光纤\n"
-            '返回：{"intent":"FIND_ENTITY","entities":["光纤"],'
-            '"relation_hints":["使用"],"constraints":{}}\n'
-            "问题：从SDH到PDH怎么走\n"
-            '返回：{"intent":"FIND_PATH","entities":["SDH","PDH"],'
+            "问题：哪些实体与Y有关\n"
+            '返回：{"intent":"FIND_ENTITY","entities":["Y"],'
+            '"relation_hints":["相关"],"constraints":{}}\n'
+            "问题：从A到C怎么走\n"
+            '返回：{"intent":"FIND_PATH","entities":["A","C"],'
             '"relation_hints":["路径"],"constraints":{"max_hops":3}}\n'
-            "问题：有多少种协议\n"
-            '返回：{"intent":"COUNT","entities":["协议"],'
+            "问题：有多少种类型\n"
+            '返回：{"intent":"COUNT","entities":["类型"],'
             '"relation_hints":[],"constraints":{}}\n'
             "现在请解析以下问题，仅返回JSON对象：\n"
             f"{question}"
         )
-
     def _parse_response(self, response: str, original: str) -> ParsedQuestion:
         try:
             payload = json.loads(self._strip_code_fences(response))
@@ -121,18 +120,16 @@ class QuestionParser:
             if cleaned and cleaned not in entities:
                 entities.append(cleaned)
 
+        # Domain-agnostic patterns with Chinese-aware boundaries
+        # (\b fails between CJK and ASCII, so use lookaround)
+        _B = r'(?<![A-Za-z0-9])'   # left boundary
+        _E = r'(?![A-Za-z0-9])'    # right boundary
         patterns = [
-            r"\b(?:SDH|PDH|WDM|OTN|SONET|MSTP|PTN)\b",
-            r"\bSTM-\d+\b",
-            r"\bVC-\d+\b",
-            r"\bE\d+\b",
-            r"\bTU-\d+\b",
-            r"\bAU-\d+\b",
-            r"\bODU\d+\b",
-            r"\bOTU\d+\b",
-            r"\bG\.\d{3}\b",
-            r"\b\d+(?:\.\d+)?Gb/s\b",
-            r"\b\d+(?:\.\d+)?Mb/s\b",
+            _B + r'[A-Z]{2,}(?:-[A-Z0-9]+)*' + _E,          # Acronyms: TCP, HTTP-2, OTN
+            _B + r'[A-Z][a-zA-Z]*[A-Z][a-zA-Z]*' + _E,     # MixedCase: PostgreSQL, MongoDB
+            _B + r'[A-Z]{1,}[a-z]*-\d+' + _E,              # Alphanumeric IDs: STM-1, H-264
+            _B + r'[A-Z]\.\d{2,}' + _E,                    # Standards: G.709, X.25
+            _B + r'\d+(?:\.\d+)?\s*(?:Gb/s|Mb/s|GHz|MHz|kHz|TB|GB|MB|KB)' + _E,
         ]
         for pattern in patterns:
             for match in re.findall(pattern, question, flags=re.IGNORECASE):
