@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from xml.sax.saxutils import escape, quoteattr
 
 from src.common.logger import get_logger
 
@@ -22,7 +23,7 @@ class EvidenceEdge:
     target: str
     relation_type: str
     confidence: float = 1.0
-
+    hop: int = 0
 
 @dataclass
 class EvidenceStep:
@@ -114,6 +115,73 @@ class EvidenceChain:
             "path_description": self.get_path_description(),
         }
 
+    def to_xml(self) -> str:
+        """Generate structured XML representation of the evidence chain."""
+        lines: list[str] = []
+
+        # Root element
+        attrs = f" start={quoteattr(self.start_entity)}"
+        if self.end_entity:
+            attrs += f" end={quoteattr(self.end_entity)}"
+        attrs += f' confidence="{self.total_confidence:.2f}"'
+        lines.append(f"<evidence_chain{attrs}>")
+
+        # Reasoning path grouped by hop
+        lines.append("  <reasoning_path>")
+        edges_by_hop: dict[int, list[EvidenceEdge]] = {}
+        for edge in self.edges:
+            edges_by_hop.setdefault(edge.hop, []).append(edge)
+        for hop_num in sorted(edges_by_hop):
+            lines.append(f'    <hop number="{hop_num}">')
+            for edge in edges_by_hop[hop_num]:
+                lines.append(
+                    f"      <edge"
+                    f" source={quoteattr(edge.source)}"
+                    f" relation={quoteattr(edge.relation_type)}"
+                    f" target={quoteattr(edge.target)}"
+                    f' confidence="{edge.confidence:.2f}" />'
+                )
+            lines.append("    </hop>")
+        lines.append("  </reasoning_path>")
+
+        # Entities
+        lines.append("  <entities>")
+        for node in self.nodes:
+            desc = node.properties.get("description", "")
+            if desc:
+                lines.append(
+                    f"    <entity"
+                    f" name={quoteattr(node.name)}"
+                    f" label={quoteattr(node.label)}"
+                    f' hop="{node.hop}">'
+                    f"{escape(str(desc))}</entity>"
+                )
+            else:
+                lines.append(
+                    f"    <entity"
+                    f" name={quoteattr(node.name)}"
+                    f" label={quoteattr(node.label)}"
+                    f' hop="{node.hop}" />'
+                )
+        lines.append("  </entities>")
+
+        # Reasoning steps
+        if self.steps:
+            lines.append("  <reasoning_steps>")
+            for step in self.steps:
+                reasoning = step.reasoning or (
+                    f"通过{step.relation_used or '未知关系'}探索"
+                    f" {'、'.join(step.nodes_explored)}"
+                )
+                lines.append(
+                    f'    <step hop="{step.hop_number}">'
+                    f"{escape(reasoning)}</step>"
+                )
+            lines.append("  </reasoning_steps>")
+
+        lines.append("</evidence_chain>")
+        return "\n".join(lines)
+
 
 class EvidenceChainBuilder:
     def __init__(self, start_entity: str) -> None:
@@ -134,6 +202,8 @@ class EvidenceChainBuilder:
             node.hop = self._current_hop
             self._nodes.append(node)
 
+        for edge in edges:
+            edge.hop = self._current_hop
         self._edges.extend(edges)
 
         relation_used = edges[0].relation_type if edges else None

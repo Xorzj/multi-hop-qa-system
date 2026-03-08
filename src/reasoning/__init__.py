@@ -6,7 +6,7 @@ from src.reasoning.evidence_chain import (
     EvidenceStep,
 )
 from src.reasoning.reasoning_orchestrator import (
-    HopDecision,
+    ReasoningDecision,
     ReasoningConfig,
     ReasoningOrchestrator,
 )
@@ -17,7 +17,7 @@ __all__ = [
     "EvidenceEdge",
     "EvidenceNode",
     "EvidenceStep",
-    "HopDecision",
+    "ReasoningDecision",
     "ReasoningConfig",
     "ReasoningOrchestrator",
 ]
