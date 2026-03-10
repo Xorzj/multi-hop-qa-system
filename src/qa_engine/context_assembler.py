@@ -16,6 +16,7 @@ class AssembledContext:
     evidence_confidence: float = 1.0
     reasoning_steps: list[str] = field(default_factory=list)
     entity_descriptions: dict[str, str] = field(default_factory=dict)
+    source_citations: list[dict[str, str]] = field(default_factory=list)
     prompt: str = ""
 
 
@@ -37,7 +38,10 @@ class ContextAssembler:
             else []
         )
         entity_descriptions = self._describe_entities(evidence)
-        prompt = self._build_prompt(question, evidence_summary, reasoning_steps)
+        source_citations = self._collect_source_citations(evidence)
+        prompt = self._build_prompt(
+            question, evidence_summary, reasoning_steps, source_citations
+        )
         prompt = self._truncate_if_needed(prompt, self._max_context_length)
         return AssembledContext(
             question=question,
@@ -45,6 +49,7 @@ class ContextAssembler:
             evidence_confidence=evidence.total_confidence,
             reasoning_steps=reasoning_steps,
             entity_descriptions=entity_descriptions,
+            source_citations=source_citations,
             prompt=prompt,
         )
 
@@ -82,8 +87,33 @@ class ContextAssembler:
             )
         return entity_descriptions
 
+    def _collect_source_citations(
+        self, evidence: EvidenceChain
+    ) -> list[dict[str, str]]:
+        """Extract unique source text citations from evidence edges."""
+        citations: list[dict[str, str]] = []
+        seen_chunks: set[str] = set()
+        for edge in evidence.edges:
+            if edge.source_text and edge.source_chunk_id:
+                if edge.source_chunk_id not in seen_chunks:
+                    seen_chunks.add(edge.source_chunk_id)
+                    citations.append(
+                        {
+                            "chunk_id": edge.source_chunk_id,
+                            "text": edge.source_text,
+                            "relation": (
+                                f"{edge.source} --{edge.relation_type}--> {edge.target}"
+                            ),
+                        }
+                    )
+        return citations
+
     def _build_prompt(
-        self, question: str, evidence_summary: str, reasoning_steps: list[str]
+        self,
+        question: str,
+        evidence_summary: str,
+        reasoning_steps: list[str],
+        source_citations: list[dict[str, str]] | None = None,
     ) -> str:
         sections = [
             "你是一个专业的知识问答助手。请基于以下知识图谱证据回答用户问题。",
@@ -98,6 +128,11 @@ class ContextAssembler:
         if reasoning_steps:
             sections.extend(["", "## 推理路径", "\n".join(reasoning_steps)])
 
+        if source_citations:
+            sections.extend(["", "## 原文引用"])
+            for i, citation in enumerate(source_citations[:5], 1):
+                sections.append(f"[{i}] ({citation['chunk_id']}) {citation['text']}")
+
         sections.extend(
             [
                 "",
@@ -105,7 +140,9 @@ class ContextAssembler:
                 "- 基于证据准确回答问题",
                 "- 如果证据不足，明确说明",
                 "- 使用专业但易懂的语言",
-                "- 在回答末尾，引用证据链中的关键路径作为支撑（格式：[证据: 实体A --关系--> 实体B]）",
+                "- 在回答末尾，引用证据链中的关键路径作为支撑"
+                "（格式：[证据: 实体A --关系--> 实体B]）",
+                "- 如果有原文引用，在关键结论后标注引用编号（格式：[1]、[2]等）",
                 "",
                 "请回答：",
             ]

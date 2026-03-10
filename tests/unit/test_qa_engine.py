@@ -1,8 +1,10 @@
 import pytest
 
+from src.data_processing.schema_inducer import DomainSchema, EntityTypeSpec
 from src.llm.base_client import BaseLLMClient, GenerationParams
 from src.qa_engine.answer_generator import AnswerGenerator, GeneratedAnswer
 from src.qa_engine.context_assembler import AssembledContext, ContextAssembler
+from src.qa_engine.query_rewriter import QueryPlan, QueryRewriter, QueryStep
 from src.qa_engine.question_parser import ParsedQuestion, QueryIntent, QuestionParser
 from src.reasoning.evidence_chain import (
     EvidenceChain,
@@ -117,6 +119,7 @@ def test_question_parser_parse_response_invalid_json_fallback(
     assert parsed.relation_hints == []
     assert parsed.constraints == {}
 
+
 def test_question_parser_fallback_extracts_acronyms(llm_factory: callable) -> None:
     """Generic acronym patterns: TCP, HTTP-2, ACID."""
     parser = QuestionParser(llm_factory("not used"))
@@ -155,6 +158,7 @@ def test_question_parser_fallback_no_optical_hardcode(llm_factory: callable) -> 
     parsed = parser._parse_response("not json", original="DNA和RNA的区别")
     assert "DNA" in parsed.entities
     assert "RNA" in parsed.entities
+
 
 @pytest.mark.asyncio
 async def test_question_parser_parse_empty_question(llm_factory: callable) -> None:
@@ -246,3 +250,178 @@ async def test_answer_generator_omits_reasoning_when_disabled(
     assert generated.reasoning_steps is None
     assert generated.answer == response
     assert 0.0 <= generated.confidence <= 1.0
+
+
+# ===================== QueryRewriter tests =====================
+
+
+def _make_schema_with_labels(*labels: str) -> DomainSchema:
+    """Helper to create a DomainSchema with given entity type labels."""
+    return DomainSchema(
+        entity_types=[
+            EntityTypeSpec(name=label, label=label, definition=f"{label}类型")
+            for label in labels
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_separates_entity_and_type(
+    llm_factory: callable,
+) -> None:
+    """LLM correctly splits entities: 冠心病→start_entity, 症状→target_type."""
+    response = (
+        '{"start_entities": ["冠心病"], "steps": ['
+        '{"action": "find_neighbors", "target_type": "症状", '
+        '"relation_hint": "引起", "direction": "out", '
+        '"description": "查找冠心病引起的症状"}'
+        "]}"
+    )
+    schema = _make_schema_with_labels("症状", "药物", "疾病")
+    rewriter = QueryRewriter(llm_factory(response), domain_schema=schema)
+    parsed = ParsedQuestion(
+        original="冠心病会引起哪些症状？",
+        intent=QueryIntent.FIND_ENTITY,
+        entities=["冠心病", "症状"],
+        relation_hints=["引起"],
+    )
+    plan = await rewriter.rewrite(parsed)
+    assert plan.start_entities == ["冠心病"]
+    assert len(plan.steps) == 1
+    assert plan.steps[0].target_type == "症状"
+    assert plan.steps[0].action == "find_neighbors"
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_multihop_decomposition(
+    llm_factory: callable,
+) -> None:
+    """Multi-hop query: 冠心病→症状→药物."""
+    response = (
+        '{"start_entities": ["冠心病"], "steps": ['
+        '{"action": "find_neighbors", "target_type": "症状", '
+        '"direction": "out", "description": "找症状"}, '
+        '{"action": "find_neighbors", "target_type": "药物", '
+        '"direction": "in", "description": "找药物"}'
+        "]}"
+    )
+    schema = _make_schema_with_labels("症状", "药物")
+    rewriter = QueryRewriter(llm_factory(response), domain_schema=schema)
+    parsed = ParsedQuestion(
+        original="冠心病的症状用什么药物治疗？",
+        intent=QueryIntent.FIND_ENTITY,
+        entities=["冠心病", "症状", "药物"],
+    )
+    plan = await rewriter.rewrite(parsed)
+    assert plan.start_entities == ["冠心病"]
+    assert len(plan.steps) == 2
+    assert plan.steps[0].target_type == "症状"
+    assert plan.steps[1].target_type == "药物"
+    assert plan.steps[1].direction == "in"
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_all_concrete_entities(
+    llm_factory: callable,
+) -> None:
+    """When all entities are concrete, no target_type filter is used."""
+    response = (
+        '{"start_entities": ["SDH", "WDM"], "steps": ['
+        '{"action": "find_neighbors", "direction": "both", '
+        '"description": "查找关联"}'
+        "]}"
+    )
+    rewriter = QueryRewriter(llm_factory(response))
+    parsed = ParsedQuestion(
+        original="SDH和WDM是什么关系？",
+        intent=QueryIntent.FIND_RELATION,
+        entities=["SDH", "WDM"],
+    )
+    plan = await rewriter.rewrite(parsed)
+    assert plan.start_entities == ["SDH", "WDM"]
+    assert len(plan.steps) == 1
+    assert plan.steps[0].target_type is None
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_llm_failure_fallback(llm_factory: callable) -> None:
+    """When LLM returns garbage, fallback plan uses schema to classify."""
+    schema = _make_schema_with_labels("症状", "药物")
+    # Return unparseable text
+    rewriter = QueryRewriter(llm_factory("not valid json!!"), domain_schema=schema)
+    parsed = ParsedQuestion(
+        original="冠心病会引起哪些症状？",
+        intent=QueryIntent.FIND_ENTITY,
+        entities=["冠心病", "症状"],
+        relation_hints=["引起"],
+    )
+    plan = await rewriter.rewrite(parsed)
+    # Fallback: "冠心病" is not a schema label → start_entity
+    # "症状" is a schema label → target_type
+    assert "冠心病" in plan.start_entities
+    assert len(plan.steps) >= 1
+    assert any(s.target_type == "症状" for s in plan.steps)
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_no_schema_fallback(llm_factory: callable) -> None:
+    """Without domain schema, fallback puts all entities as start_entities."""
+    rewriter = QueryRewriter(llm_factory("garbage"))
+    parsed = ParsedQuestion(
+        original="A和B的关系",
+        intent=QueryIntent.FIND_RELATION,
+        entities=["A", "B"],
+    )
+    plan = await rewriter.rewrite(parsed)
+    # No schema → all entities become start_entities
+    assert "A" in plan.start_entities
+    assert "B" in plan.start_entities
+
+
+def test_query_plan_dataclass_defaults() -> None:
+    """QueryPlan defaults are sane."""
+    plan = QueryPlan()
+    assert plan.start_entities == []
+    assert plan.steps == []
+    assert plan.original_question == ""
+    assert plan.raw_entities == []
+
+
+def test_query_step_dataclass_defaults() -> None:
+    """QueryStep defaults are sane."""
+    step = QueryStep()
+    assert step.action == "find_neighbors"
+    assert step.target_type is None
+    assert step.relation_hint is None
+    assert step.direction == "both"
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_empty_entities(llm_factory: callable) -> None:
+    """With no entities, returns empty plan immediately."""
+    rewriter = QueryRewriter(llm_factory("should not be called"))
+    parsed = ParsedQuestion(original="你好", intent=QueryIntent.EXPLAIN, entities=[])
+    plan = await rewriter.rewrite(parsed)
+    assert plan.start_entities == []
+    assert plan.steps == []
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_code_fence_response(llm_factory: callable) -> None:
+    """LLM response wrapped in markdown code fence is parsed correctly."""
+    response = (
+        "```json\n"
+        '{"start_entities": ["X"], "steps": ['
+        '{"action": "find_neighbors", "target_type": "Y", "direction": "out"}'
+        "]}\n"
+        "```"
+    )
+    rewriter = QueryRewriter(llm_factory(response))
+    parsed = ParsedQuestion(
+        original="X的Y有哪些",
+        intent=QueryIntent.FIND_ENTITY,
+        entities=["X", "Y"],
+    )
+    plan = await rewriter.rewrite(parsed)
+    assert plan.start_entities == ["X"]
+    assert plan.steps[0].target_type == "Y"

@@ -18,6 +18,7 @@ class GeneratedAnswer:
     reasoning_steps: list[str] | None
     latency_ms: float
     tokens_used: int | None = None
+    source_citations: list[dict[str, str]] | None = None
 
 
 class AnswerGenerator:
@@ -55,6 +56,7 @@ class AnswerGenerator:
             reasoning_steps=reasoning_steps,
             latency_ms=latency_ms,
             tokens_used=None,
+            source_citations=getattr(context, "source_citations", None),
         )
 
     async def generate_simple(
