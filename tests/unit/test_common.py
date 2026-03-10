@@ -37,6 +37,7 @@ def sample_config_data() -> dict:
 @pytest.fixture
 def config_path(tmp_path: Path, sample_config_data: dict) -> Path:
     import tomli_w
+
     path = tmp_path / "config.toml"
     path.write_bytes(tomli_w.dumps(sample_config_data).encode())
     return path
@@ -93,6 +94,7 @@ def test_load_config_env_interpolation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import tomli_w
+
     monkeypatch.setenv("TEST_MODEL_DIR", "/env/models")
     config_data = {
         "llm": {

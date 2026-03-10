@@ -29,6 +29,7 @@ from src.common.config import Config, load_config
 from src.common.logger import get_logger, setup_logging
 from src.data_processing.document_loader import DocumentLoader
 from src.data_processing.entity_extractor import EntityExtractor
+from src.data_processing.schema_inducer import DomainSchema
 from src.data_processing.triple_extractor import TripleExtractor
 from src.knowledge_graph.graph_builder import GraphBuilder
 from src.knowledge_graph.graph_retriever import GraphRetriever
@@ -37,6 +38,7 @@ from src.llm.base_client import BaseLLMClient
 from src.llm.client_factory import create_llm_client
 from src.qa_engine.answer_generator import AnswerGenerator
 from src.qa_engine.context_assembler import ContextAssembler
+from src.qa_engine.query_rewriter import QueryRewriter
 from src.qa_engine.question_parser import QuestionParser
 from src.reasoning.evidence_chain import EvidenceChain
 from src.reasoning.reasoning_orchestrator import ReasoningOrchestrator
@@ -316,19 +318,43 @@ async def run_online_qa(
     t0 = time.time()
 
     # ① 问题解析
-    phase = _phase("[1/4] 解析问题意图")
-    parser = QuestionParser(llm_client)
+    phase = _phase("[1/5] 解析问题意图")
+    # Fetch known entity names from graph for fallback matching
+    _name_rows = await neo4j_client.execute("MATCH (n) RETURN n.name AS name")
+    known_entities = [r["name"] for r in _name_rows if r.get("name")]
+    parser = QuestionParser(llm_client, known_entities=known_entities)
     parsed = await parser.parse(question)
     print(f"     意图: {parsed.intent.value}  实体: {parsed.entities}")
     if parsed.relation_hints:
         print(f"     关系提示: {parsed.relation_hints}")
-    _done("[1/4] 问题解析", phase)
+    _done("[1/5] 问题解析", phase)
 
-    # ② 多跳推理
-    phase = _phase("[2/4] 多跳推理 (图谱检索)")
+    # ② 查询重写 (QueryRewriter)
+    query_plan = None
+    schema_path = Path("config/domain_schema.json")
+    if schema_path.exists():
+        phase = _phase("[2/5] 查询重写 (QueryRewriter)")
+        domain_schema = DomainSchema.load(schema_path)
+        rewriter = QueryRewriter(llm_client, domain_schema=domain_schema)
+        query_plan = await rewriter.rewrite(parsed)
+        print(f"     起始实体: {query_plan.start_entities}")
+        for i, step in enumerate(query_plan.steps):
+            label_info = f" label={step.target_type}" if step.target_type else ""
+            rel_info = f" rel={step.relation_hint}" if step.relation_hint else ""
+            print(
+                f"     步骤 {i + 1}: {step.action}"
+                f" dir={step.direction}{label_info}{rel_info}"
+                f"  ({step.description})"
+            )
+        _done("[2/5] 查询重写", phase)
+    else:
+        print("  ⏭️  跳过查询重写（无 domain_schema.json）")
+
+    # ③ 多跳推理
+    phase = _phase("[3/5] 多跳推理 (图谱检索)")
     retriever = GraphRetriever(neo4j_client)
     orchestrator = ReasoningOrchestrator(retriever, llm_client)
-    evidence = await orchestrator.reason(parsed)
+    evidence = await orchestrator.reason(parsed, query_plan=query_plan)
 
     _box("推理路径", _format_evidence(evidence, verbose=verbose))
 
@@ -338,20 +364,20 @@ async def run_online_qa(
         for xml_line in evidence.to_xml().splitlines():
             print(f"       {xml_line}")
 
-    _done("[2/4] 多跳推理", phase)
+    _done("[3/5] 多跳推理", phase)
 
-    # ③ 上下文组装
-    phase = _phase("[3/4] 组装推理上下文")
+    # ④ 上下文组装
+    phase = _phase("[4/5] 组装推理上下文")
     assembler = ContextAssembler()
     context = assembler.assemble(question, evidence, include_reasoning=True)
     print(f"     → {len(context.prompt):,} 字符, {len(context.reasoning_steps)} 步推理")
-    _done("[3/4] 上下文组装", phase)
+    _done("[4/5] 上下文组装", phase)
 
-    # ④ 答案生成
-    phase = _phase("[4/4] 生成答案 (LLM)")
+    # ⑤ 答案生成
+    phase = _phase("[5/5] 生成答案 (LLM)")
     generator = AnswerGenerator(llm_client)
     answer = await generator.generate(context, include_reasoning=True)
-    _done("[4/4] 答案生成", phase)
+    _done("[5/5] 答案生成", phase)
 
     elapsed = time.time() - t0
 
@@ -363,7 +389,7 @@ async def run_online_qa(
         print(f"  {line}")
 
     if verbose and answer.reasoning_steps:
-        print(f"\n  📎 推理步骤:")
+        print("\n  📎 推理步骤:")
         for step in answer.reasoning_steps:
             print(f"     • {step}")
 
@@ -394,7 +420,7 @@ async def main() -> None:
     arg_parser.add_argument(
         "--max-sections",
         type=int,
-        default=10,
+        default=0,
         help="最大处理段落数 (默认: 10, 0=全部)",
     )
     arg_parser.add_argument(
@@ -458,12 +484,12 @@ async def main() -> None:
 
     try:
         # 连接 Neo4j
-        print(f"\n  🔗 连接 Neo4j…")
+        print("\n  🔗 连接 Neo4j…")
         await neo4j_client.connect()
         print("     ✅ 已连接")
 
         # 启动 LLM
-        print(f"  🤖 初始化 LLM…")
+        print("  🤖 初始化 LLM…")
         await llm_client.start()
         print(f"     ✅ 已就绪 ({config.llm.provider})")
 
@@ -531,7 +557,7 @@ async def main() -> None:
                 )
 
     finally:
-        print(f"\n  🧹 清理资源…")
+        print("\n  🧹 清理资源…")
         await llm_client.stop()
         await neo4j_client.close()
         print("     ✅ 已释放")

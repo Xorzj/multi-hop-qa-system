@@ -26,8 +26,16 @@ def get_graph_retriever(request: Request) -> GraphRetriever | None:
     return GraphRetriever(neo4j_client)
 
 
-def get_question_parser(request: Request) -> QuestionParser:
-    return QuestionParser(get_llm_client(request))
+async def get_question_parser(request: Request) -> QuestionParser:
+    neo4j_client = get_neo4j_client(request)
+    known_entities: list[str] = []
+    if neo4j_client is not None:
+        try:
+            rows = await neo4j_client.execute("MATCH (n) RETURN n.name AS name")
+            known_entities = [r["name"] for r in rows if r.get("name")]
+        except Exception:  # noqa: BLE001
+            pass  # Fall back to empty list
+    return QuestionParser(get_llm_client(request), known_entities=known_entities)
 
 
 def get_reasoning_orchestrator(request: Request) -> ReasoningOrchestrator | None:

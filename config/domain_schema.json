@@ -1,0 +1,277 @@
+{
+  "domain_name": "医学基础",
+  "entity_types": [
+    {
+      "name": "disease",
+      "label": "疾病",
+      "definition": "影响人体健康的异常状态或病理过程",
+      "examples": [
+        "高血压",
+        "冠心病",
+        "糖尿病"
+      ]
+    },
+    {
+      "name": "symptom",
+      "label": "症状",
+      "definition": "疾病或病理状态在患者主观感受或客观检查中的表现",
+      "examples": [
+        "胸闷",
+        "胸痛",
+        "头晕"
+      ]
+    },
+    {
+      "name": "organ_system",
+      "label": "器官系统",
+      "definition": "执行特定生理功能的一组器官或结构",
+      "examples": [
+        "心血管系统",
+        "内分泌系统",
+        "神经系统"
+      ]
+    },
+    {
+      "name": "drug",
+      "label": "药物",
+      "definition": "用于预防、治疗或诊断疾病的化学物质",
+      "examples": [
+        "硝酸甘油",
+        "胰岛素",
+        "ACEI"
+      ]
+    },
+    {
+      "name": "pathogen",
+      "label": "病原体",
+      "definition": "引起疾病的微生物或其他生物体",
+      "examples": [
+        "细菌",
+        "病毒"
+      ]
+    },
+    {
+      "name": "physiological_process",
+      "label": "生理过程",
+      "definition": "生物体内发生的功能性活动或反应",
+      "examples": [
+        "肾素-血管紧张素-醛固酮系统",
+        "炎症反应"
+      ]
+    },
+    {
+      "name": "structural_change",
+      "label": "结构改变",
+      "definition": "组织或器官在疾病过程中发生的形态学变化",
+      "examples": [
+        "动脉粥样硬化",
+        "巴雷特食管"
+      ]
+    },
+    {
+      "name": "nutrient",
+      "label": "营养素",
+      "definition": "维持生命活动所需的物质",
+      "examples": [
+        "维生素B族",
+        "铁"
+      ]
+    }
+  ],
+  "relation_types": [
+    {
+      "name": "causes",
+      "label": "导致",
+      "definition": "A直接引起B的发生或发展",
+      "source_types": [
+        "disease",
+        "pathogen",
+        "physiological_process"
+      ],
+      "target_types": [
+        "disease",
+        "symptom",
+        "structural_change"
+      ],
+      "examples": [
+        "高血压 → 导致 → 动脉粥样硬化",
+        "糖尿病 → 导致 → 神经病变"
+      ]
+    },
+    {
+      "name": "affects",
+      "label": "影响",
+      "definition": "A对B的功能或状态产生作用",
+      "source_types": [
+        "disease",
+        "physiological_process"
+      ],
+      "target_types": [
+        "organ_system"
+      ],
+      "examples": [
+        "高血压 → 影响 → 心血管系统",
+        "糖尿病 → 影响 → 内分泌系统"
+      ]
+    },
+    {
+      "name": "manifests_as",
+      "label": "表现为",
+      "definition": "A在临床上呈现为B",
+      "source_types": [
+        "disease"
+      ],
+      "target_types": [
+        "symptom"
+      ],
+      "examples": [
+        "冠心病 → 表现为 → 胸痛",
+        "贫血 → 表现为 → 乏力"
+      ]
+    },
+    {
+      "name": "treats",
+      "label": "治疗",
+      "definition": "A用于治疗或缓解B",
+      "source_types": [
+        "drug",
+        "nutrient"
+      ],
+      "target_types": [
+        "disease",
+        "symptom"
+      ],
+      "examples": [
+        "硝酸甘油 → 治疗 → 心绞痛",
+        "铁剂 → 治疗 → 贫血"
+      ]
+    },
+    {
+      "name": "inhibits",
+      "label": "抑制",
+      "definition": "A阻止或降低B的活动或效应",
+      "source_types": [
+        "drug"
+      ],
+      "target_types": [
+        "physiological_process"
+      ],
+      "examples": [
+        "ACEI → 抑制 → 血管紧张素Ⅱ生成",
+        "质子泵抑制剂 → 抑制 → 胃酸分泌"
+      ]
+    },
+    {
+      "name": "belongs_to",
+      "label": "属于",
+      "definition": "A在解剖或功能上属于B系统",
+      "source_types": [
+        "organ_system"
+      ],
+      "target_types": [
+        "organ_system"
+      ],
+      "examples": [
+        "肾脏 → 属于 → 泌尿系统"
+      ]
+    },
+    {
+      "name": "requires",
+      "label": "需要",
+      "definition": "A的治疗或管理需要B",
+      "source_types": [
+        "disease"
+      ],
+      "target_types": [
+        "drug",
+        "nutrient"
+      ],
+      "examples": [
+        "糖尿病 → 需要 → 胰岛素",
+        "神经病变 → 需要 → 维生素B族"
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "source_type": "disease",
+      "relation": "causes",
+      "target_type": "disease"
+    },
+    {
+      "source_type": "disease",
+      "relation": "causes",
+      "target_type": "symptom"
+    },
+    {
+      "source_type": "disease",
+      "relation": "causes",
+      "target_type": "structural_change"
+    },
+    {
+      "source_type": "pathogen",
+      "relation": "causes",
+      "target_type": "disease"
+    },
+    {
+      "source_type": "physiological_process",
+      "relation": "causes",
+      "target_type": "disease"
+    },
+    {
+      "source_type": "disease",
+      "relation": "affects",
+      "target_type": "organ_system"
+    },
+    {
+      "source_type": "physiological_process",
+      "relation": "affects",
+      "target_type": "organ_system"
+    },
+    {
+      "source_type": "disease",
+      "relation": "manifests_as",
+      "target_type": "symptom"
+    },
+    {
+      "source_type": "drug",
+      "relation": "treats",
+      "target_type": "disease"
+    },
+    {
+      "source_type": "drug",
+      "relation": "treats",
+      "target_type": "symptom"
+    },
+    {
+      "source_type": "nutrient",
+      "relation": "treats",
+      "target_type": "disease"
+    },
+    {
+      "source_type": "nutrient",
+      "relation": "treats",
+      "target_type": "symptom"
+    },
+    {
+      "source_type": "drug",
+      "relation": "inhibits",
+      "target_type": "physiological_process"
+    },
+    {
+      "source_type": "organ_system",
+      "relation": "belongs_to",
+      "target_type": "organ_system"
+    },
+    {
+      "source_type": "disease",
+      "relation": "requires",
+      "target_type": "drug"
+    },
+    {
+      "source_type": "disease",
+      "relation": "requires",
+      "target_type": "nutrient"
+    }
+  ]
+}

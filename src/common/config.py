@@ -27,6 +27,7 @@ class LLMConfig:
     api_key: str
     generation: GenerationConfig
 
+
 @dataclass
 class GraphConfig:
     uri: str
@@ -61,6 +62,7 @@ class ExtractionConfig:
     top_p: float
     max_retries: int
     relation_types: list[str] = field(default_factory=list)
+    schema_path: str = ""
 
 
 @dataclass
@@ -102,10 +104,13 @@ def _resolve_variable(var_name: str) -> str:
     if var_name in auth:
         return auth[var_name]
     return os.environ.get(var_name, "")
+
+
 def _interpolate_env_values(value: Any) -> Any:
     """Replace ${VAR} placeholders: auth.json > env var > empty string."""
     if isinstance(value, str):
         import re
+
         return re.sub(r"\$\{([^}]+)\}", lambda m: _resolve_variable(m.group(1)), value)
     if isinstance(value, dict):
         return {key: _interpolate_env_values(item) for key, item in value.items()}
@@ -114,10 +119,11 @@ def _interpolate_env_values(value: Any) -> Any:
     return value
 
 
-
 def _require_tomllib() -> Any:
     import tomllib
+
     return tomllib
+
 
 def _build_config(data: dict[str, Any]) -> Config:
     llm_data = data.get("llm", {})
@@ -162,6 +168,7 @@ def _build_config(data: dict[str, Any]) -> Config:
         top_p=extraction_data.get("top_p", 0.1),
         max_retries=extraction_data.get("max_retries", 3),
         relation_types=extraction_data.get("relation_types", []),
+        schema_path=extraction_data.get("schema_path", ""),
     )
     return Config(
         llm=llm_config,

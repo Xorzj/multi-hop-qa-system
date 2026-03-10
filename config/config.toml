@@ -2,7 +2,7 @@
 
 [llm]
 provider = "openai"
-model_path = "deepseek-ai/DeepSeek-R1-0528"
+model_path = "deepseek-v3-0324"
 base_url = "${OPENAI_BASE_URL}"
 api_key = "${OPENAI_API_KEY}"
 adapter_path = "models/adapters/default"
@@ -32,8 +32,11 @@ strip_base64_images = true
 entity_chunk_size = 1500
 triple_chunk_size = 800
 max_context_entities = 15
-max_new_tokens = 2048
+max_new_tokens = 4096
 temperature = 0.05
 top_p = 0.1
 max_retries = 3
-relation_types = ["包含", "派生", "相关", "协同", "依赖", "属于"]
+# schema_path — 领域 Schema JSON 文件路径（由 SchemaInducer 生成）
+# 设置后实体/三元组抽取将受 Schema 约束，显著提高抽取质量
+# schema_path = "config/domain_schema.json"
+# relation_types — 留空以使用推荐词汇表（不强制约束），模型可自由使用文本中的准确动词

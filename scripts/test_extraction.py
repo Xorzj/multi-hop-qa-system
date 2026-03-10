@@ -91,7 +91,7 @@ async def main(max_sections: int = 5) -> None:
     if self_loops:
         print(f"  ⚠️  自反关系: {len(self_loops)} 个 (应为0)")
     else:
-        print(f"  ✅ 自反关系: 0 个")
+        print("  ✅ 自反关系: 0 个")
 
     await llm_client.stop()
     print("\n完成!")

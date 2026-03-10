@@ -8,6 +8,7 @@ from src.training.data_collator import (
     generate_qa_pairs,
     load_documents_as_dapt,
 )
+from src.training.data_formatter import AnnotationFormatter, ChatMLSample
 from src.training.lora_trainer import SFTConfig, SFTTrainer
 
 __all__ = [
@@ -21,6 +22,8 @@ __all__ = [
     "SFTSample",
     "CheckpointMetadata",
     "CheckpointManager",
+    "AnnotationFormatter",
+    "ChatMLSample",
     "generate_qa_pairs",
     "load_documents_as_dapt",
 ]

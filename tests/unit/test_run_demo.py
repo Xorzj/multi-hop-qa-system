@@ -5,9 +5,7 @@ from __future__ import annotations
 import io
 from io import TextIOBase
 
-import pytest
-
-from scripts.run_demo import _TeeStream, _compact_rows, _format_evidence, _hr, _truncate
+from scripts.run_demo import _compact_rows, _format_evidence, _hr, _TeeStream, _truncate
 
 
 class TestTeeStream:
@@ -148,28 +146,44 @@ class TestFormatEvidence:
             EvidenceStep,
         )
 
-        default_edges = edges if edges is not None else [
-            EvidenceEdge(
-                source="A", target="B", relation_type="rel1",
-                confidence=0.9, hop=1,
-            ),
-            EvidenceEdge(
-                source="B", target="C", relation_type="rel2",
-                confidence=0.8, hop=2,
-            ),
-        ]
+        default_edges = (
+            edges
+            if edges is not None
+            else [
+                EvidenceEdge(
+                    source="A",
+                    target="B",
+                    relation_type="rel1",
+                    confidence=0.9,
+                    hop=1,
+                ),
+                EvidenceEdge(
+                    source="B",
+                    target="C",
+                    relation_type="rel2",
+                    confidence=0.8,
+                    hop=2,
+                ),
+            ]
+        )
         default_nodes = [
             EvidenceNode(name="A", label="type", hop=0),
             EvidenceNode(name="B", label="type", hop=1),
             EvidenceNode(name="C", label="type", hop=2),
         ]
-        default_steps = steps if steps is not None else [
-            EvidenceStep(
-                hop_number=1, action="explore",
-                nodes_explored=["B"], relation_used="rel1",
-                reasoning="通过 rel1 找到 B",
-            ),
-        ]
+        default_steps = (
+            steps
+            if steps is not None
+            else [
+                EvidenceStep(
+                    hop_number=1,
+                    action="explore",
+                    nodes_explored=["B"],
+                    relation_used="rel1",
+                    reasoning="通过 rel1 找到 B",
+                ),
+            ]
+        )
         return EvidenceChain(
             nodes=default_nodes,
             edges=default_edges,
@@ -183,8 +197,12 @@ class TestFormatEvidence:
         from src.reasoning.evidence_chain import EvidenceChain
 
         chain = EvidenceChain(
-            nodes=[], edges=[], steps=[],
-            start_entity="X", end_entity=None, total_confidence=0.0,
+            nodes=[],
+            edges=[],
+            steps=[],
+            start_entity="X",
+            end_entity=None,
+            total_confidence=0.0,
         )
         lines = _format_evidence(chain)
         assert len(lines) == 1
