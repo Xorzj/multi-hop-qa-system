@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.common.config import ExtractionConfig
 from src.common.logger import get_logger
@@ -17,6 +17,9 @@ from src.data_processing.relation_types import (
 from src.llm.base_client import BaseLLMClient, GenerationParams
 
 DEFAULT_ENTITY_TYPES: list[str] = []
+
+if TYPE_CHECKING:
+    from src.data_processing.schema_inducer import DomainSchema
 
 
 @dataclass
@@ -33,7 +36,7 @@ class Entity:
 @dataclass
 class IncrementalRelation:
     """Relation extracted during incremental extraction.
-    
+
     Produced when entities and relations are extracted together.
     """
 
@@ -57,9 +60,11 @@ class EntityExtractor:
         llm_client: BaseLLMClient,
         entity_types: list[str] | None = None,
         extraction_config: ExtractionConfig | None = None,
+        domain_schema: DomainSchema | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._entity_types = list(entity_types or DEFAULT_ENTITY_TYPES)
+        self._domain_schema = domain_schema
         self._logger = get_logger(__name__)
 
         cfg = extraction_config
@@ -70,6 +75,12 @@ class EntityExtractor:
             max_new_tokens=cfg.max_new_tokens if cfg else 2048,
             temperature=cfg.temperature if cfg else 0.05,
             top_p=cfg.top_p if cfg else 0.1,
+            enable_thinking=False,
+            system_message=(
+                "你是专业的知识图谱实体抽取专家。"
+                "你的任务是从给定文本中识别具名实体。"
+                "请以JSON数组格式输出结果，每个元素包含 name 和 type 字段。"
+            ),
         )
 
     # ── Public API ───────────────────────────────────────────────
@@ -89,6 +100,10 @@ class EntityExtractor:
                 f"({len(section.content)} chars, context={len(ctx)} entities)"
             )
             section_entities = await self._extract_section(section, ctx)
+            # Fill source provenance from section metadata
+            source_id = section.chunk_id or f"sec_{section.index}"
+            for entity in section_entities:
+                entity.properties.setdefault("source_chunk_id", source_id)
             self._logger.info(f"  → {len(section_entities)} entities from [{heading}]")
             all_entities.extend(section_entities)
 
@@ -138,7 +153,63 @@ class EntityExtractor:
     # ── Prompt construction ──────────────────────────────────────
 
     def _build_prompt(self, section: Section, context_entities: list[Entity]) -> str:
-        """Build prompt with heading context and incremental entity context."""
+        """Build prompt with heading context and incremental entity context.
+
+        When a DomainSchema is available, uses schema-constrained entity types
+        instead of generic categories.
+        """
+
+        if self._domain_schema and self._domain_schema.entity_types:
+            return self._build_schema_prompt(section, context_entities)
+        return self._build_open_prompt(section, context_entities)
+
+    def _build_schema_prompt(
+        self, section: Section, context_entities: list[Entity]
+    ) -> str:
+        """Build prompt constrained by DomainSchema entity types."""
+        assert self._domain_schema is not None
+
+        parts: list[str] = [
+            "你是专业的知识图谱实体抽取专家。请从下面的文本中抽取实体。\n",
+            self._domain_schema.build_entity_type_prompt(),
+            "要求：\n"
+            "1. type 字段必须使用上述领域实体类型的 name 值\n"
+            "2. 每个实体必须有 name 和 type 字段\n"
+            "3. 只抽取当前段落中明确提到的实体，不要编造\n"
+            "4. 只返回JSON数组，不要有任何其他文字\n"
+            "5. 完整抽取，不要遗漏因果链条中的中间节点\n",
+        ]
+
+        if section.heading_chain:
+            parts.append(f"当前章节位置：{' > '.join(section.heading_chain)}\n")
+
+        if context_entities:
+            names = ", ".join(e.name for e in context_entities)
+            parts.append(f"已知实体（来自前文，避免重复抽取）：{names}\n")
+
+        # Build example from schema's own examples
+        example_items: list[str] = []
+        for et in self._domain_schema.entity_types[:3]:
+            if et.examples:
+                example_items.append(
+                    f'{{"name": "{et.examples[0]}", "type": "{et.name}"}}'
+                )
+        if not example_items:
+            example_items = ['{"name": "示例实体", "type": "示例类型"}']
+        example_str = "[" + ", ".join(example_items) + "]"
+
+        parts.append(
+            f"输出格式示例：\n{example_str}\n\n"
+            f"待抽取文本：\n{section.content}\n\n"
+            "请直接返回JSON数组："
+        )
+
+        return "\n".join(parts)
+
+    def _build_open_prompt(
+        self, section: Section, context_entities: list[Entity]
+    ) -> str:
+        """Build generic prompt without schema constraints (original behavior)."""
 
         parts: list[str] = [
             "你是专业的知识图谱实体抽取专家。请从下面的文本中抽取所有重要的实体，"
@@ -157,16 +228,13 @@ class EntityExtractor:
             "5. 宁可多抽、不要遗漏，尤其是因果链条中的中间节点\n",
         ]
 
-        # Heading context
         if section.heading_chain:
             parts.append(f"当前章节位置：{' > '.join(section.heading_chain)}\n")
 
-        # Incremental context
         if context_entities:
             names = ", ".join(e.name for e in context_entities)
             parts.append(f"已知实体（来自前文，避免重复抽取）：{names}\n")
 
-        # Entity-type guidance
         if self._entity_types:
             parts.append(
                 f"可参考的实体类型提示（仅作指导）：{'、'.join(self._entity_types)}\n"
@@ -188,7 +256,7 @@ class EntityExtractor:
 
     def _parse_response(self, response: str) -> list[Entity]:
         """Parse the LLM JSON response into a list of Entity objects.
-        
+
         Handles thinking-model responses where JSON may be wrapped in
         <think> tags or markdown code blocks.
         """
@@ -201,7 +269,7 @@ class EntityExtractor:
         payload = None
 
         # Strategy: markdown code block (common in thinking model output)
-        code_match = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?\s*```', cleaned)
+        code_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?\s*```", cleaned)
         if code_match:
             try:
                 payload = json.loads(code_match.group(1).strip())
@@ -331,8 +399,7 @@ class EntityExtractor:
 
         for idx, section in enumerate(sections):
             ctx = all_entities[-self._max_context :] if all_entities else []
-            heading = (" > ".join(section.heading_chain)
-                       or f"section-{idx}")
+            heading = " > ".join(section.heading_chain) or f"section-{idx}"
             self._logger.info(
                 f"Incremental extraction from [{heading}] "
                 f"({len(section.content)} chars, context={len(ctx)} entities)"
@@ -424,14 +491,11 @@ class EntityExtractor:
 
         # Heading context
         if section.heading_chain:
-            parts.append(
-                f"当前章节位置：{' > '.join(section.heading_chain)}\n"
-            )
+            parts.append(f"当前章节位置：{' > '.join(section.heading_chain)}\n")
 
         # Known entities from previous sections
         if context_entities:
-            ctx_lines = [f"- {e.name}（{e.entity_type}）"
-                         for e in context_entities]
+            ctx_lines = [f"- {e.name}（{e.entity_type}）" for e in context_entities]
             parts.append(
                 "已知实体（来自前文，可在关系中引用，不需要重新抽取）：\n"
                 + "\n".join(ctx_lines)
@@ -439,17 +503,17 @@ class EntityExtractor:
             )
 
         parts.append(
-            '输出格式（严格JSON，不要有任何其他文字）：\n'
-            '{\n'
+            "输出格式（严格JSON，不要有任何其他文字）：\n"
+            "{\n"
             '  "new_entities": [\n'
             '    {"name": "实体名", "type": "类型", "aliases": []}\n'
-            '  ],\n'
+            "  ],\n"
             '  "relations": [\n'
             '    {"subject": "主语实体名", "predicate": "关系动词", '
             '"object": "宾语实体名", "relation_type": "类型name值", '
             '"confidence": 0.9}\n'
-            '  ]\n'
-            '}\n\n'
+            "  ]\n"
+            "}\n\n"
             f"待抽取文本：\n{section.content}\n\n"
             "请直接返回JSON对象："
         )
@@ -475,16 +539,14 @@ class EntityExtractor:
 
         # Guard: if payload has no expected keys, fall back to entity-only
         has_incremental_keys = (
-            "new_entities" in payload
-            or "entities" in payload
-            or "relations" in payload
+            "new_entities" in payload or "entities" in payload or "relations" in payload
         )
         if not has_incremental_keys:
             entities = self._parse_response(response)
             return entities, []
 
         # Parse entities
-        entities: list[Entity] = []
+        entities = []
         raw_entities = payload.get("new_entities") or payload.get("entities") or []
         if isinstance(raw_entities, list):
             for item in raw_entities:
@@ -547,9 +609,7 @@ class EntityExtractor:
         """Try multiple strategies to extract a JSON object from LLM output."""
 
         # Strategy 1: markdown code block
-        code_match = re.search(
-            r'```(?:json)?\s*\n?([\s\S]*?)\n?\s*```', text
-        )
+        code_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?\s*```", text)
         if code_match:
             try:
                 result = json.loads(code_match.group(1).strip())

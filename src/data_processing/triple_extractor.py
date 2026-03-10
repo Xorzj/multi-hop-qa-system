@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.common.config import ExtractionConfig
 from src.common.logger import get_logger
@@ -15,6 +15,9 @@ from src.data_processing.relation_types import (
     build_relation_type_prompt,
 )
 from src.llm.base_client import BaseLLMClient, GenerationParams
+
+if TYPE_CHECKING:
+    from src.data_processing.schema_inducer import DomainSchema
 
 
 @dataclass
@@ -28,6 +31,7 @@ class Triple:
     confidence: float = 1.0
     properties: dict[str, Any] = field(default_factory=dict)
     source: str | None = None
+
 
 class TripleExtractor:
     """Extract subject-predicate-object triples from document sections.
@@ -44,9 +48,11 @@ class TripleExtractor:
         llm_client: BaseLLMClient,
         relation_types: list[str] | list[RelationType] | None = None,
         extraction_config: ExtractionConfig | None = None,
+        domain_schema: DomainSchema | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._logger = get_logger(__name__)
+        self._domain_schema = domain_schema
 
         cfg = extraction_config
 
@@ -64,9 +70,16 @@ class TripleExtractor:
         self._max_retries = cfg.max_retries if cfg else 3
 
         self._generation_params = GenerationParams(
-            max_new_tokens=cfg.max_new_tokens if cfg else 2048,
+            max_new_tokens=cfg.max_new_tokens if cfg else 4096,
             temperature=cfg.temperature if cfg else 0.05,
             top_p=cfg.top_p if cfg else 0.1,
+            enable_thinking=False,
+            system_message=(
+                "你是专业的知识图谱关系抽取专家。"
+                "你的任务是从给定文本中识别实体之间的关系三元组。"
+                "请以JSON数组格式输出结果，"
+                "每个元素包含 subject、predicate、object 字段。"
+            ),
         )
 
     # ── Public API ───────────────────────────────────────────────
@@ -123,6 +136,15 @@ class TripleExtractor:
         prompt = self._build_prompt(section, relevant)
         triples = await self._generate_with_retry(prompt)
 
+        # Fill source provenance from section metadata
+        source_id = section.chunk_id or f"sec_{section.index}"
+        source_text = section.content[:200]
+        for triple in triples:
+            if not triple.source:
+                triple.source = source_id
+            triple.properties.setdefault("source_chunk_id", source_id)
+            triple.properties.setdefault("source_text", source_text)
+
         self._logger.info(f"  → {len(triples)} triples from [{heading}]")
         return triples
 
@@ -135,9 +157,7 @@ class TripleExtractor:
                 response = await self._llm_client.generate(
                     prompt=prompt, params=self._generation_params
                 )
-                self._logger.debug(
-                    f"LLM response for triple extraction:\n{response}"
-                )
+                self._logger.debug(f"LLM response for triple extraction:\n{response}")
                 triples = self._parse_response(response)
                 if triples or attempt > 0:
                     return triples
@@ -170,26 +190,111 @@ class TripleExtractor:
     # ── Prompt construction ──────────────────────────────────────
 
     def _build_prompt(self, section: Section, entities: list[Entity]) -> str:
-        """Build prompt with heading context, filtered entities, and relation types."""
+        """Build prompt with heading context, filtered entities, and relation types.
+
+        When a DomainSchema is available, uses schema-constrained relation types
+        and valid combination constraints.
+        """
+
+        if self._domain_schema and self._domain_schema.relation_types:
+            return self._build_schema_prompt(section, entities)
+        return self._build_open_prompt(section, entities)
+
+    def _build_schema_prompt(self, section: Section, entities: list[Entity]) -> str:
+        """Build prompt constrained by DomainSchema relation types + constraints."""
+        assert self._domain_schema is not None
 
         parts: list[str] = [
-            "你是专业的知识图谱关系抽取专家。"
-            "请分析文本并识别实体之间的关系三元组。\n",
+            "你是专业的知识图谱关系抽取专家。请分析文本并识别实体之间的关系三元组。\n",
             "要求：\n"
             "1. 优先从给定的实体列表中寻找关系\n"
-            "2. 如果文本中明确提到了未列在实体列表中的重要实体（尤其是因果链条"
-            "中的中间节点），可以将其作为三元组的一部分输出\n"
-            "3. 主语和宾语只使用实体名称，不要带括号中的类型\n"
-            "4. 关系必须在文本中有明确依据，不要猜测\n"
-            "5. 只返回JSON数组，不要有任何其他文字\n"
-            "6. 关系要具体、有信息量，避免笼统的 '相关'、'有关' 等模糊词汇\n"
-            "7. 重要：subject和object字段只填写实体名称，"
-            "例如\"高血压\"而不是\"高血压（疾病）\"\n",
+            "2. subject和object必须是简短的实体名称"
+            "（通常2-6个字），不要使用描述性短语\n"
+            "3. 关系必须在文本中有明确依据\n"
+            "4. relation_type 必须使用下方定义的关系类型 name 值\n"
+            "5. 用JSON数组格式输出\n"
+            "6. 注意抽取因果链条中的中间环节\n",
         ]
 
-        # Heading context
         if section.heading_chain:
-            chain = ' > '.join(section.heading_chain)
+            chain = " > ".join(section.heading_chain)
+            parts.append(f"当前章节位置：{chain}\n")
+
+        # Relation types from schema
+        schema_rts = self._domain_schema.to_relation_types()
+        parts.append(build_relation_type_prompt(schema_rts))
+        parts.append(
+            "说明：predicate 字段用中文描述具体关系动词，"
+            "relation_type 字段必须使用上述类型的 name 值\n"
+        )
+
+        # Constraint rules from schema
+        constraint_prompt = self._domain_schema.build_constraint_prompt()
+        if constraint_prompt:
+            parts.append(constraint_prompt)
+
+        # Entity list
+        entity_lines = [f"- {e.name}（{e.entity_type}）" for e in entities]
+        parts.append(
+            "已知实体列表（优先在这些实体之间建立关系）：\n"
+            + "\n".join(entity_lines)
+            + "\n"
+        )
+
+        # Output format example
+        example_items: list[str] = []
+        for rt in self._domain_schema.relation_types[:2]:
+            if rt.examples:
+                example_items.append(
+                    f'{{"subject": "示例A", "predicate": "示例关系", '
+                    f'"object": "示例B", "relation_type": "{rt.name}", '
+                    f'"confidence": 0.9}}'
+                )
+        if not example_items:
+            example_items = [
+                '{"subject": "A", "predicate": "导致", '
+                '"object": "B", "relation_type": "correlate", '
+                '"confidence": 0.9}'
+            ]
+
+        parts.append(
+            f"输出格式示例：\n[{', '.join(example_items)}]\n\n"
+            f"待抽取文本：\n{section.content}\n\n"
+            "请直接返回JSON数组（实体名称不要加括号类型）："
+        )
+
+        return "\n".join(parts)
+
+    def _build_open_prompt(self, section: Section, entities: list[Entity]) -> str:
+        """Build generic prompt without schema constraints (original behavior)."""
+
+        parts: list[str] = [
+            "你是专业的知识图谱关系抽取专家。请分析文本并识别实体之间的关系三元组。\n",
+            "要求：\n"
+            "1. 优先从给定的实体列表中寻找关系\n"
+            "2. 如果文本中明确提到了未列在实体列表中的重要实体"
+            "（尤其是因果链条中的中间节点），"
+            "可以将其作为三元组的一部分输出\n"
+            "3. subject和object必须是简短的实体名称"
+            "（通常2-6个字），不要使用描述性短语\n"
+            "   ✓ 正确：“血管内皮”“动脉粥样硬化”\n"
+            "   ✗ 错误：“病变发生的核心部位”"
+            "“主要的治疗手段”\n"
+            "4. 关系必须在文本中有明确依据，不要猜测\n"
+            "5. 最终输出为JSON数组格式\n"
+            "6. 关系要具体、有信息量，"
+            "避免笼统的 '相关'、'有关' 等模糊词汇\n"
+            "7. 重要：subject和object字段只填写实体名称，"
+            '例如"高血压"而不是"高血压（疾病）"\n'
+            "8. 注意抽取因果链条中的中间环节，"
+            "不要跳过中间步骤\n"
+            "   例如：高血压→损伤→血管内皮"
+            "→促进→动脉粥样硬化→导致→冠心病\n"
+            "   不要直接写：高血压→导致→冠心病\n",
+        ]
+
+        if section.heading_chain:
+            chain = " > ".join(section.heading_chain)
             parts.append(f"当前章节位置：{chain}\n")
 
         # Structured relation types (preferred)
@@ -200,11 +305,9 @@ class TripleExtractor:
                 "relation_type 字段必须使用上述类型的 name 值\n"
             )
         elif self._relation_type_names:
-            # Legacy: plain string relation types
             types_str = "、".join(self._relation_type_names)
             parts.append(f"关系类型限定（必须使用以下类型之一）：{types_str}\n")
         else:
-            # No types defined — provide suggested vocabulary
             parts.append(
                 "推荐的关系类型（仅作参考，可自由使用文本中出现的准确动词）：\n"
                 "  因果类：导致、引起、促进、抑制、诱发、加剧、缓解\n"
@@ -217,12 +320,10 @@ class TripleExtractor:
         entity_lines = [f"- {e.name}（{e.entity_type}）" for e in entities]
         parts.append(
             "已知实体列表（优先在这些实体之间建立关系，"
-            "但也可补充文本中明确提到的遗漏实体）：\n"
-            + "\n".join(entity_lines)
-            + "\n"
+            "但也可补充文本中明确提到的遗漏实体）：\n" + "\n".join(entity_lines) + "\n"
         )
 
-        # Output format — includes relation_type if structured types are provided
+        # Output format
         if self._structured_types:
             parts.append(
                 "输出格式示例：\n"
@@ -254,7 +355,7 @@ class TripleExtractor:
 
     def _parse_response(self, response: str) -> list[Triple]:
         """Parse the LLM JSON response into a list of Triple objects.
-        
+
         Handles thinking-model responses where JSON may be wrapped in
         <think> tags or markdown code blocks.
         """
@@ -264,10 +365,14 @@ class TripleExtractor:
         if not cleaned:
             cleaned = response  # fallback if everything was inside <think>
 
+        # Strip CoT analysis from models that output reasoning
+        # in content field without <think> tags (e.g. glm-4.7-flash)
+        cleaned = self._strip_cot_analysis(cleaned)
+
         payload = None
 
         # Strategy: markdown code block (common in thinking model output)
-        code_match = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?\s*```', cleaned)
+        code_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?\s*```", cleaned)
         if code_match:
             try:
                 payload = json.loads(code_match.group(1).strip())
@@ -345,9 +450,7 @@ class TripleExtractor:
                     subject=subject.strip(),
                     predicate=predicate.strip(),
                     object=object_value.strip(),
-                    relation_type=str(
-                        item.get("relation_type", "")
-                    ).strip(),
+                    relation_type=str(item.get("relation_type", "")).strip(),
                     confidence=float(confidence),
                     properties=property_map,
                 )
@@ -355,6 +458,25 @@ class TripleExtractor:
         return triples
 
     # ── Post-processing: filter + deduplicate ────────────────────
+
+    @staticmethod
+    def _strip_cot_analysis(text: str) -> str:
+        """Strip chain-of-thought analysis to find JSON content.
+
+        Thinking models may output reasoning as plain markdown
+        in the content field. This locates the first JSON-like
+        content ([ or {) and returns from that point onward.
+        """
+        stripped = text.strip()
+        if stripped.startswith(("[", "{")):
+            return text
+        bracket = stripped.find("[")
+        brace = stripped.find("{")
+        if bracket == -1 and brace == -1:
+            return text  # no JSON-like content found
+        candidates = [i for i in (bracket, brace) if i >= 0]
+        start = min(candidates)
+        return stripped[start:]
 
     @staticmethod
     def _normalize_entity_name(name: str) -> str:
@@ -369,20 +491,41 @@ class TripleExtractor:
         name = re.sub(r"\([^)]*\)$", "", name)
         return name.strip()
 
+    @staticmethod
+    def _is_descriptive_phrase(name: str) -> bool:
+        """Check if name looks like a descriptive phrase, not a proper entity.
+
+        Rejects things like "病变发生的核心部位", "主要的治疗手段".
+        Keeps things like "动脉粥样硬化", "血管内皮", "DWDM".
+        """
+        name = name.strip()
+        # Too long for Chinese: > 10 chars is likely a phrase
+        if len(name) > 10 and not re.search(r"[A-Za-z]", name):
+            return True
+        # Contains structural particles suggesting a clause/phrase
+        _clause_markers = ("的", "了", "过", "着", "地", "得")
+        if any(m in name for m in _clause_markers):
+            return True
+        return False
+
     def _filter_triples(
         self, triples: list[Triple], entity_names: set[str]
     ) -> list[Triple]:
         """Remove self-loops and invalid relation types.
 
+        When a DomainSchema is available, also validates relation_type
+        against the schema's relation type names.
         New entities discovered during triple extraction are kept —
         the graph builder's auto_create_missing_nodes handles them.
         """
 
-        valid_type_names = (
-            set(self._relation_type_names)
-            if self._relation_type_names
-            else set()
-        )
+        # Build valid relation type set: prefer schema, fallback to configured
+        if self._domain_schema and self._domain_schema.relation_types:
+            valid_type_names = {rt.name for rt in self._domain_schema.relation_types}
+        elif self._relation_type_names:
+            valid_type_names = set(self._relation_type_names)
+        else:
+            valid_type_names = set()
 
         filtered: list[Triple] = []
         for t in triples:
@@ -392,21 +535,24 @@ class TripleExtractor:
 
             # 1. Self-loop: subject == object
             if subject == obj:
-                self._logger.debug(
-                    f"Filtered self-loop: ({subject}) → ({obj})"
-                )
+                self._logger.debug(f"Filtered self-loop: ({subject}) → ({obj})")
                 continue
 
-            # 2. Log new entities discovered during triple extraction
-            if subject not in entity_names:
-                self._logger.info(
-                    f"New entity discovered in triple: '{subject}'"
-                )
-            if obj not in entity_names:
-                self._logger.info(
-                    f"New entity discovered in triple: '{obj}'"
-                )
-
+            # 2. Entity name quality check for NEW entities
+            #    Known entities pass through; new ones must look
+            #    like proper entity names, not descriptive phrases
+            bad_entity = False
+            for name, label in ((subject, "subject"), (obj, "object")):
+                if name not in entity_names:
+                    if self._is_descriptive_phrase(name):
+                        self._logger.debug(
+                            f"Filtered descriptive phrase as {label}: '{name}'"
+                        )
+                        bad_entity = True
+                        break
+                    self._logger.info(f"New entity discovered in triple: '{name}'")
+            if bad_entity:
+                continue
             # 3. Relation type validation
             if valid_type_names:
                 # Check both predicate and relation_type
@@ -489,8 +635,7 @@ class TripleExtractor:
                     entity_names = {e.name for e in entities}
                     filtered = self._filter_triples(triples, entity_names)
                     self._logger.info(
-                        f"Cross-section extraction: "
-                        f"{len(filtered)} relations found"
+                        f"Cross-section extraction: {len(filtered)} relations found"
                     )
                     return filtered
             except Exception as exc:
@@ -503,8 +648,7 @@ class TripleExtractor:
 
         if last_error:
             self._logger.error(
-                f"All {self._max_retries} cross-section attempts "
-                f"failed: {last_error}"
+                f"All {self._max_retries} cross-section attempts failed: {last_error}"
             )
         return []
 
@@ -522,7 +666,7 @@ class TripleExtractor:
             "要求：\n"
             "1. 只抽取跨越不同章节的关系，同一章节内的关系不需要\n"
             "2. 关系必须在多个章节的内容中有依据\n"
-            "3. 只返回JSON数组\n",
+            "3. 只返回JSON数组，不要有任何其他文字，不要输出分析过程\n",
         ]
 
         # Relation type guidance
@@ -535,8 +679,7 @@ class TripleExtractor:
         # Section summaries
         parts.append("章节内容摘要：\n")
         for section in sections:
-            heading = (' > '.join(section.heading_chain)
-                       or f"section-{section.index}")
+            heading = " > ".join(section.heading_chain) or f"section-{section.index}"
             preview = section.content[:300]
             parts.append(f"--- [{heading}] ---")
             parts.append(preview)
@@ -544,9 +687,7 @@ class TripleExtractor:
 
         # Entity list
         entity_lines = [f"- {e.name}（{e.entity_type}）" for e in entities]
-        parts.append(
-            "已知实体列表：\n" + "\n".join(entity_lines) + "\n"
-        )
+        parts.append("已知实体列表：\n" + "\n".join(entity_lines) + "\n")
 
         # Output format
         if self._structured_types:

@@ -160,7 +160,7 @@ def test_split_sections_single_newline_fallback() -> None:
     """Documents with only \n (no \n\n) should still split by line."""
     loader = DocumentLoader()
     # 6 lines * ~150 chars each = ~900 chars, well under 500 max_chunk_size
-    text = "\n".join([f"第{i+1}段：" + "技术描述内容" * 15 for i in range(6)])
+    text = "\n".join([f"第{i + 1}段：" + "技术描述内容" * 15 for i in range(6)])
     sections = loader.split_into_sections(text, max_chunk_size=500)
     assert len(sections) > 1, "Should split on \\n when \\n\\n is absent"
     for s in sections:
@@ -170,7 +170,7 @@ def test_split_sections_single_newline_fallback() -> None:
 def test_split_sections_double_newline_preferred() -> None:
     """Documents with \n\n should split on double newlines, not single."""
     loader = DocumentLoader()
-    text = "\n\n".join([f"段落{i+1}。" + "填充内容。" * 30 for i in range(5)])
+    text = "\n\n".join([f"段落{i + 1}。" + "填充内容。" * 30 for i in range(5)])
     sections = loader.split_into_sections(text, max_chunk_size=500)
     assert len(sections) >= 2
     for s in sections:
@@ -208,6 +208,7 @@ def test_split_sections_large_single_newline_doc() -> None:
     total_chars = sum(len(s.content) for s in sections)
     # All content preserved (minus whitespace from stripping)
     assert total_chars >= len(text) * 0.9
+
 
 def test_entity_dataclass_defaults() -> None:
     entity = Entity(name="Alice", entity_type="Person")
@@ -458,12 +459,7 @@ def test_entity_parse_response_code_block_no_json_tag(
 ) -> None:
     """Code block without 'json' language specifier."""
     extractor = EntityExtractor(fake_llm_client_factory("[]"))
-    response = (
-        "提取结果如下：\n"
-        "```\n"
-        '[{"name": "Neo4j", "type": "数据库"}]\n'
-        "```"
-    )
+    response = '提取结果如下：\n```\n[{"name": "Neo4j", "type": "数据库"}]\n```'
     entities = extractor._parse_response(response)
     assert len(entities) == 1
     assert entities[0].name == "Neo4j"
@@ -481,7 +477,9 @@ class TestEntityPromptQuality:
         extractor = EntityExtractor(fake_llm_client_factory("[]"))
         section = Section(
             content="高血压损伤血管内皮",
-            heading_chain=[], level=0, index=0,
+            heading_chain=[],
+            level=0,
+            index=0,
         )
         prompt = extractor._build_prompt(section, [])
         # Should mention abstract concepts / processes
@@ -498,9 +496,7 @@ class TestEntityPromptQuality:
         assert "因果链" in prompt
         assert "中间实体" in prompt or "中间节点" in prompt
 
-    def test_prompt_uses_multidomain_examples(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_uses_multidomain_examples(self, fake_llm_client_factory) -> None:
         extractor = EntityExtractor(fake_llm_client_factory("[]"))
         section = Section(content="test", heading_chain=[], level=0, index=0)
         prompt = extractor._build_prompt(section, [])
@@ -509,9 +505,7 @@ class TestEntityPromptQuality:
         # Tech domain example
         assert "分布式数据库" in prompt or "光伏发电" in prompt
 
-    def test_prompt_no_telecom_only_examples(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_no_telecom_only_examples(self, fake_llm_client_factory) -> None:
         """Prompt should NOT be biased toward telecom domain."""
         extractor = EntityExtractor(fake_llm_client_factory("[]"))
         section = Section(content="test", heading_chain=[], level=0, index=0)
@@ -519,9 +513,7 @@ class TestEntityPromptQuality:
         # Should NOT contain telecom-specific examples as the ONLY examples
         assert "STM-1" not in prompt
 
-    def test_prompt_includes_entity_types_hint(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_includes_entity_types_hint(self, fake_llm_client_factory) -> None:
         extractor = EntityExtractor(
             fake_llm_client_factory("[]"),
             entity_types=["疾病", "药物"],
@@ -531,22 +523,19 @@ class TestEntityPromptQuality:
         assert "疾病" in prompt
         assert "药物" in prompt
 
-    def test_prompt_includes_heading_context(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_includes_heading_context(self, fake_llm_client_factory) -> None:
         extractor = EntityExtractor(fake_llm_client_factory("[]"))
         section = Section(
             content="content",
             heading_chain=["第一章", "心血管疾病"],
-            level=0, index=0,
+            level=0,
+            index=0,
         )
         prompt = extractor._build_prompt(section, [])
         assert "第一章" in prompt
         assert "心血管疾病" in prompt
 
-    def test_prompt_includes_context_entities(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_includes_context_entities(self, fake_llm_client_factory) -> None:
         extractor = EntityExtractor(fake_llm_client_factory("[]"))
         section = Section(content="test", heading_chain=[], level=0, index=0)
         existing = [Entity(name="高血压", entity_type="疾病")]
@@ -579,9 +568,7 @@ class TestTriplePromptQuality:
         assert "损伤" in prompt
         assert "诱发" in prompt
 
-    def test_prompt_allows_new_entity_discovery(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_allows_new_entity_discovery(self, fake_llm_client_factory) -> None:
         """Prompt should NOT say 'only use entities from the list'."""
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
         entities = [Entity(name="X", entity_type="T")]
@@ -592,9 +579,7 @@ class TestTriplePromptQuality:
         # Should mention supplementing missing entities
         assert "遗漏" in prompt or "补充" in prompt
 
-    def test_prompt_uses_multidomain_examples(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_uses_multidomain_examples(self, fake_llm_client_factory) -> None:
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
         entities = [Entity(name="X", entity_type="T")]
         section = Section(content="test", heading_chain=[], level=0, index=0)
@@ -619,9 +604,7 @@ class TestTriplePromptQuality:
 class TestTripleFilterRelaxed:
     """Verify _filter_triples allows new entities but blocks self-loops."""
 
-    def test_keeps_triples_with_new_entities(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_keeps_triples_with_new_entities(self, fake_llm_client_factory) -> None:
         """Triples with entities not in the known list should be kept."""
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
         triples = [
@@ -635,19 +618,13 @@ class TestTripleFilterRelaxed:
         assert len(result) == 1
         assert result[0].object == "血管内皮"
 
-    def test_filters_self_loops(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_filters_self_loops(self, fake_llm_client_factory) -> None:
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
-        triples = [
-            Triple(subject="A", predicate="导致", object="A")
-        ]
+        triples = [Triple(subject="A", predicate="导致", object="A")]
         result = extractor._filter_triples(triples, {"A"})
         assert len(result) == 0
 
-    def test_normalizes_entity_names_in_filter(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_normalizes_entity_names_in_filter(self, fake_llm_client_factory) -> None:
         """Type annotations should be stripped from entity names."""
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
         triples = [
@@ -688,9 +665,7 @@ class TestTripleFilterRelaxed:
         result = extractor._filter_triples(triples, {"A", "B"})
         assert len(result) == 1
 
-    def test_self_loop_after_normalization(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_self_loop_after_normalization(self, fake_llm_client_factory) -> None:
         """Self-loop check should happen after name normalization."""
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
         triples = [
@@ -802,9 +777,7 @@ class TestEntityMerger:
         assert len(result) == 1
 
     def test_synonym_group_merge(self) -> None:
-        config = MergeConfig(
-            synonym_groups=[["高血压", "HBP", "hypertension"]]
-        )
+        config = MergeConfig(synonym_groups=[["高血压", "HBP", "hypertension"]])
         merger = EntityMerger(config=config)
         entities = [
             Entity(name="高血压", entity_type="疾病"),
@@ -877,9 +850,7 @@ def merger_merge(entities: list[Entity]) -> list[Entity]:
 
 class TestIncrementalRelation:
     def test_dataclass_defaults(self) -> None:
-        rel = IncrementalRelation(
-            subject="A", predicate="导致", object="B"
-        )
+        rel = IncrementalRelation(subject="A", predicate="导致", object="B")
         assert rel.relation_type == ""
         assert rel.confidence == 1.0
 
@@ -896,24 +867,24 @@ class TestIncrementalRelation:
 
 
 class TestIncrementalExtraction:
-    def test_parse_incremental_response_valid(
-        self, fake_llm_client_factory
-    ) -> None:
-        response = json.dumps({
-            "new_entities": [
-                {"name": "高血压", "type": "疾病", "aliases": []},
-                {"name": "血管内皮", "type": "组织", "aliases": ["内皮"]},
-            ],
-            "relations": [
-                {
-                    "subject": "高血压",
-                    "predicate": "损伤",
-                    "object": "血管内皮",
-                    "relation_type": "correlate",
-                    "confidence": 0.95,
-                }
-            ],
-        })
+    def test_parse_incremental_response_valid(self, fake_llm_client_factory) -> None:
+        response = json.dumps(
+            {
+                "new_entities": [
+                    {"name": "高血压", "type": "疾病", "aliases": []},
+                    {"name": "血管内皮", "type": "组织", "aliases": ["内皮"]},
+                ],
+                "relations": [
+                    {
+                        "subject": "高血压",
+                        "predicate": "损伤",
+                        "object": "血管内皮",
+                        "relation_type": "correlate",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        )
         extractor = EntityExtractor(fake_llm_client_factory(response))
         entities, relations = extractor._parse_incremental_response(response)
         assert len(entities) == 2
@@ -927,10 +898,12 @@ class TestIncrementalExtraction:
     def test_parse_incremental_response_markdown_block(
         self, fake_llm_client_factory
     ) -> None:
-        inner = json.dumps({
-            "new_entities": [{"name": "X", "type": "T"}],
-            "relations": [],
-        })
+        inner = json.dumps(
+            {
+                "new_entities": [{"name": "X", "type": "T"}],
+                "relations": [],
+            }
+        )
         response = f"```json\n{inner}\n```"
         extractor = EntityExtractor(fake_llm_client_factory(response))
         entities, relations = extractor._parse_incremental_response(response)
@@ -950,12 +923,14 @@ class TestIncrementalExtraction:
     def test_parse_incremental_response_with_think_tags(
         self, fake_llm_client_factory
     ) -> None:
-        inner = json.dumps({
-            "new_entities": [{"name": "A", "type": "T"}],
-            "relations": [
-                {"subject": "A", "predicate": "p", "object": "B"},
-            ],
-        })
+        inner = json.dumps(
+            {
+                "new_entities": [{"name": "A", "type": "T"}],
+                "relations": [
+                    {"subject": "A", "predicate": "p", "object": "B"},
+                ],
+            }
+        )
         response = f"<think>thinking...</think>{inner}"
         extractor = EntityExtractor(fake_llm_client_factory(response))
         entities, relations = extractor._parse_incremental_response(response)
@@ -965,17 +940,19 @@ class TestIncrementalExtraction:
     def test_parse_incremental_response_invalid_entities_skipped(
         self, fake_llm_client_factory
     ) -> None:
-        response = json.dumps({
-            "new_entities": [
-                {"name": "", "type": "T"},  # empty name
-                {"name": 123, "type": "T"},  # non-str name
-                {"name": "valid", "type": "T"},  # good
-            ],
-            "relations": [
-                {"subject": 123, "predicate": "p", "object": "B"},  # bad
-                {"subject": "A", "predicate": "p", "object": "B"},  # good
-            ],
-        })
+        response = json.dumps(
+            {
+                "new_entities": [
+                    {"name": "", "type": "T"},  # empty name
+                    {"name": 123, "type": "T"},  # non-str name
+                    {"name": "valid", "type": "T"},  # good
+                ],
+                "relations": [
+                    {"subject": 123, "predicate": "p", "object": "B"},  # bad
+                    {"subject": "A", "predicate": "p", "object": "B"},  # good
+                ],
+            }
+        )
         extractor = EntityExtractor(fake_llm_client_factory(response))
         entities, relations = extractor._parse_incremental_response(response)
         assert len(entities) == 1
@@ -987,16 +964,20 @@ class TestIncrementalExtraction:
         self, fake_llm_client_factory
     ) -> None:
         """Entities from section 0 should appear as context in section 1's prompt."""
-        section_0_resp = json.dumps({
-            "new_entities": [{"name": "E0", "type": "T"}],
-            "relations": [],
-        })
-        section_1_resp = json.dumps({
-            "new_entities": [{"name": "E1", "type": "T"}],
-            "relations": [
-                {"subject": "E0", "predicate": "rel", "object": "E1"},
-            ],
-        })
+        section_0_resp = json.dumps(
+            {
+                "new_entities": [{"name": "E0", "type": "T"}],
+                "relations": [],
+            }
+        )
+        section_1_resp = json.dumps(
+            {
+                "new_entities": [{"name": "E1", "type": "T"}],
+                "relations": [
+                    {"subject": "E0", "predicate": "rel", "object": "E1"},
+                ],
+            }
+        )
 
         call_idx = 0
         prompts: list[str] = []
@@ -1044,8 +1025,10 @@ class TestIncrementalExtraction:
     ) -> None:
         extractor = EntityExtractor(fake_llm_client_factory(""))
         section = Section(
-            content="text", heading_chain=["第一章", "概述"],
-            level=1, index=0,
+            content="text",
+            heading_chain=["第一章", "概述"],
+            level=1,
+            index=0,
         )
         context = [Entity(name="已有实体", entity_type="概念")]
         prompt = extractor._build_incremental_prompt(
@@ -1076,15 +1059,17 @@ class TestTripleRelationType:
     def test_parse_response_includes_relation_type(
         self, fake_llm_client_factory
     ) -> None:
-        response = json.dumps([
-            {
-                "subject": "高血压",
-                "predicate": "损伤",
-                "object": "血管",
-                "relation_type": "correlate",
-                "confidence": 0.9,
-            }
-        ])
+        response = json.dumps(
+            [
+                {
+                    "subject": "高血压",
+                    "predicate": "损伤",
+                    "object": "血管",
+                    "relation_type": "correlate",
+                    "confidence": 0.9,
+                }
+            ]
+        )
         extractor = TripleExtractor(fake_llm_client_factory(response))
         triples = extractor._parse_response(response)
         assert len(triples) == 1
@@ -1118,9 +1103,7 @@ class TestTripleRelationType:
 
 
 class TestTripleStructuredPrompt:
-    def test_prompt_with_structured_types(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_with_structured_types(self, fake_llm_client_factory) -> None:
         extractor = TripleExtractor(
             fake_llm_client_factory("[]"),
             relation_types=[INCLUDE_EDGE, CORRELATE_EDGE],
@@ -1133,9 +1116,7 @@ class TestTripleStructuredPrompt:
         assert "correlate" in prompt
         assert "relation_type" in prompt
 
-    def test_prompt_with_string_types_legacy(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_with_string_types_legacy(self, fake_llm_client_factory) -> None:
         extractor = TripleExtractor(
             fake_llm_client_factory("[]"),
             relation_types=["包含", "导致"],
@@ -1147,9 +1128,7 @@ class TestTripleStructuredPrompt:
         assert "导致" in prompt
         assert "关系类型限定" in prompt
 
-    def test_prompt_with_no_types(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_prompt_with_no_types(self, fake_llm_client_factory) -> None:
         extractor = TripleExtractor(fake_llm_client_factory("[]"))
         section = Section(content="test text", heading_chain=[], level=0, index=0)
         entities = [Entity(name="A", entity_type="T")]
@@ -1159,12 +1138,12 @@ class TestTripleStructuredPrompt:
 
 class TestCrossSectionExtraction:
     @pytest.mark.asyncio()
-    async def test_extract_cross_section_basic(
-        self, fake_llm_client_factory
-    ) -> None:
-        response = json.dumps([
-            {"subject": "A", "predicate": "影响", "object": "B"},
-        ])
+    async def test_extract_cross_section_basic(self, fake_llm_client_factory) -> None:
+        response = json.dumps(
+            [
+                {"subject": "A", "predicate": "影响", "object": "B"},
+            ]
+        )
         extractor = TripleExtractor(fake_llm_client_factory(response))
         sections = [
             Section(content="text1 about A", heading_chain=[], level=0, index=0),
@@ -1200,9 +1179,7 @@ class TestCrossSectionExtraction:
         result = await extractor.extract_cross_section(sections, [])
         assert result == []
 
-    def test_cross_section_prompt_structure(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_cross_section_prompt_structure(self, fake_llm_client_factory) -> None:
         extractor = TripleExtractor(
             fake_llm_client_factory("[]"),
             relation_types=[INCLUDE_EDGE],
@@ -1228,16 +1205,16 @@ class TestCrossSectionExtraction:
 
 
 class TestQualityVerifier:
-    def test_parse_report_valid(
-        self, fake_llm_client_factory
-    ) -> None:
-        response = json.dumps({
-            "quality_score": 0.85,
-            "issues": ["遗漏了某实体"],
-            "suggestions": ["建议补充关系"],
-            "missing_entities": ["实体A"],
-            "missing_relations": ["A→导致→B"],
-        })
+    def test_parse_report_valid(self, fake_llm_client_factory) -> None:
+        response = json.dumps(
+            {
+                "quality_score": 0.85,
+                "issues": ["遗漏了某实体"],
+                "suggestions": ["建议补充关系"],
+                "missing_entities": ["实体A"],
+                "missing_relations": ["A→导致→B"],
+            }
+        )
         verifier = QualityVerifier(fake_llm_client_factory(response))
         report = verifier._parse_report(response)
         assert report.quality_score == 0.85
@@ -1245,25 +1222,19 @@ class TestQualityVerifier:
         assert len(report.suggestions) == 1
         assert "实体A" in report.missing_entities
 
-    def test_parse_report_clamped_score(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_parse_report_clamped_score(self, fake_llm_client_factory) -> None:
         response = json.dumps({"quality_score": 1.5})
         verifier = QualityVerifier(fake_llm_client_factory(response))
         report = verifier._parse_report(response)
         assert report.quality_score == 1.0
 
-    def test_parse_report_invalid_json(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_parse_report_invalid_json(self, fake_llm_client_factory) -> None:
         verifier = QualityVerifier(fake_llm_client_factory("garbage"))
         report = verifier._parse_report("garbage")
         assert report.quality_score == 0.0
         assert len(report.issues) > 0
 
-    def test_parse_report_with_think_tags(
-        self, fake_llm_client_factory
-    ) -> None:
+    def test_parse_report_with_think_tags(self, fake_llm_client_factory) -> None:
         inner = json.dumps({"quality_score": 0.7, "issues": []})
         response = f"<think>blah</think>{inner}"
         verifier = QualityVerifier(fake_llm_client_factory(response))
@@ -1271,16 +1242,16 @@ class TestQualityVerifier:
         assert report.quality_score == 0.7
 
     @pytest.mark.asyncio()
-    async def test_verify_success(
-        self, fake_llm_client_factory
-    ) -> None:
-        response = json.dumps({
-            "quality_score": 0.9,
-            "issues": [],
-            "suggestions": [],
-            "missing_entities": [],
-            "missing_relations": [],
-        })
+    async def test_verify_success(self, fake_llm_client_factory) -> None:
+        response = json.dumps(
+            {
+                "quality_score": 0.9,
+                "issues": [],
+                "suggestions": [],
+                "missing_entities": [],
+                "missing_relations": [],
+            }
+        )
         verifier = QualityVerifier(fake_llm_client_factory(response))
         report = await verifier.verify(
             text="some text",

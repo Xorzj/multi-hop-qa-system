@@ -30,6 +30,7 @@ class Section:
     heading_chain: list[str]
     level: int
     index: int
+    chunk_id: str = ""
 
 
 class DocumentLoader:
@@ -108,9 +109,17 @@ class DocumentLoader:
     # ── Semantic Section Splitting ──────────────────────────────────
 
     def split_into_sections(
-        self, content: str, max_chunk_size: int = 1500
+        self, content: str, max_chunk_size: int = 1500, doc_name: str = ""
     ) -> list[Section]:
-        """Split markdown content into semantic sections by headings."""
+        """Split markdown content into semantic sections by headings.
+
+        Args:
+            content: Markdown content to split.
+            max_chunk_size: Maximum characters per section chunk.
+            doc_name: Document name used for chunk_id generation.
+                When provided, each section gets a unique
+                ``chunk_id`` = ``"{doc_name}::sec_{index}"``.
+        """
 
         if not content.strip():
             return []
@@ -118,7 +127,7 @@ class DocumentLoader:
         headings = list(_HEADING_PATTERN.finditer(content))
 
         if not headings:
-            return self._split_plain_text(content, max_chunk_size)
+            return self._split_plain_text(content, max_chunk_size, doc_name=doc_name)
 
         sections: list[Section] = []
         heading_stack: list[tuple[int, str]] = []
@@ -127,9 +136,14 @@ class DocumentLoader:
         pre_content = content[: headings[0].start()].strip()
         if pre_content:
             for chunk in self._ensure_size(pre_content, max_chunk_size):
+                idx = len(sections)
                 sections.append(
                     Section(
-                        content=chunk, heading_chain=[], level=0, index=len(sections)
+                        content=chunk,
+                        heading_chain=[],
+                        level=0,
+                        index=idx,
+                        chunk_id=f"{doc_name}::sec_{idx}" if doc_name else "",
                     )
                 )
 
@@ -154,12 +168,14 @@ class DocumentLoader:
                 continue
 
             for chunk in self._ensure_size(body, max_chunk_size):
+                idx = len(sections)
                 sections.append(
                     Section(
                         content=chunk,
                         heading_chain=list(chain),
                         level=level,
-                        index=len(sections),
+                        index=idx,
+                        chunk_id=f"{doc_name}::sec_{idx}" if doc_name else "",
                     )
                 )
 
@@ -261,7 +277,9 @@ class DocumentLoader:
             merged.append(current)
         return merged
 
-    def _split_plain_text(self, text: str, max_size: int) -> list[Section]:
+    def _split_plain_text(
+        self, text: str, max_size: int, doc_name: str = ""
+    ) -> list[Section]:
         """Fallback for documents with no markdown headings.
 
         Always detects paragraph boundaries (``\\n\\n`` then ``\\n``)
@@ -296,6 +314,12 @@ class DocumentLoader:
             chunks = self._ensure_size(text, max_size)
 
         return [
-            Section(content=c, heading_chain=[], level=0, index=i)
+            Section(
+                content=c,
+                heading_chain=[],
+                level=0,
+                index=i,
+                chunk_id=f"{doc_name}::sec_{i}" if doc_name else "",
+            )
             for i, c in enumerate(chunks)
         ]

@@ -13,6 +13,14 @@ from src.data_processing.relation_types import (
     get_relation_type,
     register_relation_type,
 )
+from src.data_processing.schema_inducer import (
+    ConstraintRule,
+    DomainSchema,
+    EntityTypeSpec,
+    RelationTypeSpec,
+    SchemaInducer,
+)
+from src.data_processing.teacher_annotator import TeacherAnnotation, TeacherAnnotator
 from src.data_processing.triple_extractor import Triple, TripleExtractor
 
 __all__ = [
@@ -33,4 +41,11 @@ __all__ = [
     "MergeConfig",
     "QualityVerifier",
     "QualityReport",
+    "SchemaInducer",
+    "DomainSchema",
+    "EntityTypeSpec",
+    "RelationTypeSpec",
+    "ConstraintRule",
+    "TeacherAnnotator",
+    "TeacherAnnotation",
 ]
