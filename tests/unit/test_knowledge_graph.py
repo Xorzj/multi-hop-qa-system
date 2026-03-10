@@ -153,14 +153,16 @@ def test_find_neighbors_direction(
     assert "endNode(r).name as rel_end" in query.query
     assert query.parameters == {"name": "Ada", "limit": 5}
 
+
 def test_find_path(cypher_builder: CypherBuilder) -> None:
     query = cypher_builder.find_path("A", "B", max_hops=4)
-    assert query.query == (
-        "MATCH path = shortestPath((a {name: $start})-"
-        "[*1..$max_hops]->(b {name: $end})) "
-        "RETURN path"
-    )
-    assert query.parameters == {"start": "A", "end": "B", "max_hops": 4}
+    assert "shortestPath((a {name: $start})-[*1..4]->(b {name: $end}))" in query.query
+    assert "UNWIND" in query.query
+    assert "rel_type" in query.query
+    assert "rel_props" in query.query
+    assert "rel_start" in query.query
+    assert query.parameters == {"start": "A", "end": "B"}
+
 
 def test_find_by_property_escapes_property_name(
     cypher_builder: CypherBuilder,
@@ -192,6 +194,88 @@ def test_count_neighbors(cypher_builder: CypherBuilder) -> None:
         == "MATCH (n {name: $name})-[r:`KNOWS`]-() RETURN count(r) as neighbor_count"
     )
     assert query.parameters == {"name": "Ada"}
+
+
+# ===================== neighbor_label filter tests =====================
+
+
+def test_find_neighbors_with_neighbor_label(cypher_builder: CypherBuilder) -> None:
+    """find_neighbors with neighbor_label should add label filter to neighbor node."""
+    query = cypher_builder.find_neighbors(
+        "冠心病", neighbor_label="症状", direction="out", limit=10
+    )
+    assert "(m:`症状`)" in query.query
+    assert "MATCH (n {name: $name})" in query.query
+    assert "-[r]->" in query.query
+    assert query.parameters == {"name": "冠心病", "limit": 10}
+
+
+def test_find_neighbors_with_neighbor_label_and_relation(
+    cypher_builder: CypherBuilder,
+) -> None:
+    """find_neighbors with both neighbor_label and relation_type."""
+    query = cypher_builder.find_neighbors(
+        "冠心病",
+        relation_type="引起",
+        neighbor_label="症状",
+        direction="out",
+    )
+    assert "(m:`症状`)" in query.query
+    assert ":`引起`" in query.query
+
+
+def test_find_neighbors_without_neighbor_label(cypher_builder: CypherBuilder) -> None:
+    """find_neighbors without neighbor_label should not add label filter."""
+    query = cypher_builder.find_neighbors("Ada", direction="both")
+    # No label filter on m — should be just "(m)"
+    assert "(m) " in query.query
+    assert ":`" not in query.query.split("(m)")[0].split("]")[-1]
+
+
+def test_find_neighbors_neighbor_label_escapes_backtick(
+    cypher_builder: CypherBuilder,
+) -> None:
+    """Labels with backticks should be escaped."""
+    query = cypher_builder.find_neighbors("X", neighbor_label="te`st")
+    assert "(m:`te``st`)" in query.query
+
+
+# ===================== find_labeled_nearby tests =====================
+
+
+def test_find_labeled_nearby(cypher_builder: CypherBuilder) -> None:
+    """find_labeled_nearby generates multi-hop undirected Cypher with label filter."""
+    query = cypher_builder.find_labeled_nearby("冠心病", "症状", max_hops=3, limit=10)
+    assert "[*1..3]" in query.query
+    assert ":`症状`" in query.query
+    assert "DISTINCT m" in query.query
+    assert "m.name IS NOT NULL" in query.query
+    assert "m.name <> $name" in query.query
+    assert query.parameters == {"name": "冠心病", "limit": 10}
+
+
+def test_find_labeled_nearby_escapes_backtick(cypher_builder: CypherBuilder) -> None:
+    """Labels with backticks should be escaped in find_labeled_nearby."""
+    query = cypher_builder.find_labeled_nearby("X", "te`st")
+    assert ":`te``st`" in query.query
+
+
+# ===================== find_path directed tests =====================
+
+
+def test_find_path_undirected(cypher_builder: CypherBuilder) -> None:
+    """find_path with directed=False generates undirected Cypher pattern."""
+    query = cypher_builder.find_path("A", "B", max_hops=4, directed=False)
+    assert "shortestPath((a {name: $start})-[*1..4]-(b {name: $end}))" in query.query
+    assert "]->(b" not in query.query
+    assert "UNWIND" in query.query
+    assert query.parameters == {"start": "A", "end": "B"}
+
+
+def test_find_path_directed_default(cypher_builder: CypherBuilder) -> None:
+    """find_path defaults to directed (arrow ->)."""
+    query = cypher_builder.find_path("A", "B", max_hops=3)
+    assert "]->(b" in query.query
 
 
 # ===================== graph_retriever direction tests =====================

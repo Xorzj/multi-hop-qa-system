@@ -27,31 +27,67 @@ class CypherBuilder:
         relation_type: RelationType | str | None = None,
         direction: Literal["out", "in", "both"] = "both",
         limit: int = 20,
+        neighbor_label: str | None = None,
     ) -> CypherQuery:
         left, right = self._build_direction(direction)
         rel_type = self._build_relation_filter(
             str(relation_type) if relation_type else None
         )
+        label_filter = self._build_label_filter(neighbor_label)
         query = (
             "MATCH (n {name: $name})"
-            f"{left}[r{rel_type}]{right}(m) "
+            f"{left}[r{rel_type}]{right}(m{label_filter}) "
             "RETURN m, r, type(r) as rel_type, "
             "startNode(r).name as rel_start, endNode(r).name as rel_end "
             "LIMIT $limit"
         )
         return CypherQuery(query=query, parameters={"name": node_name, "limit": limit})
 
-    def find_path(
-        self, start_name: str, end_name: str, max_hops: int = 3
+    def find_labeled_nearby(
+        self,
+        node_name: str,
+        target_label: str,
+        max_hops: int = 3,
+        limit: int = 20,
     ) -> CypherQuery:
+        """Find nodes with a specific label within N hops (undirected)."""
+        safe_label = self._escape_string(target_label)
+        hops = int(max_hops)
+        query = (
+            "MATCH (n {name: $name})-[*1.." + str(hops) + "]-(m:`" + safe_label + "`) "
+            "WHERE m.name IS NOT NULL AND m.name <> $name "
+            "RETURN DISTINCT m "
+            "LIMIT $limit"
+        )
+        return CypherQuery(query=query, parameters={"name": node_name, "limit": limit})
+
+    def find_path(
+        self,
+        start_name: str,
+        end_name: str,
+        max_hops: int = 3,
+        directed: bool = True,
+    ) -> CypherQuery:
+        # Neo4j shortestPath requires literal range bounds (no parameters).
+        # UNWIND the path so result.data() returns per-hop rows with full
+        # edge properties (source_text, etc.) instead of a flattened list.
+        hops = int(max_hops)
+        arrow = "->" if directed else "-"
         query = (
             "MATCH path = shortestPath("
-            "(a {name: $start})-[*1..$max_hops]->(b {name: $end})"
-            ") RETURN path"
+            f"(a {{name: $start}})-[*1..{hops}]{arrow}(b {{name: $end}})"
+            ") "
+            "WITH nodes(path) AS ns, relationships(path) AS rs "
+            "UNWIND range(0, size(rs)-1) AS i "
+            "RETURN ns[i] AS source_node, ns[i+1] AS target_node, "
+            "type(rs[i]) AS rel_type, properties(rs[i]) AS rel_props, "
+            "startNode(rs[i]).name AS rel_start, "
+            "endNode(rs[i]).name AS rel_end, "
+            "i AS hop_idx"
         )
         return CypherQuery(
             query=query,
-            parameters={"start": start_name, "end": end_name, "max_hops": max_hops},
+            parameters={"start": start_name, "end": end_name},
         )
 
     def find_by_property(

@@ -55,6 +55,7 @@ class GraphRetriever:
         relation_type: str | None = None,
         direction: Literal["out", "in", "both"] = "both",
         limit: int = 20,
+        neighbor_label: str | None = None,
     ) -> HopResult:
         direction_value: Literal["out", "in", "both"] = direction
         query = self._cypher_builder.find_neighbors(
@@ -62,6 +63,7 @@ class GraphRetriever:
             relation_type=relation_type,
             direction=direction_value,
             limit=limit,
+            neighbor_label=neighbor_label,
         )
         records = await self._execute(query)
         nodes: list[GraphNode] = []
@@ -94,17 +96,28 @@ class GraphRetriever:
                 relations.append(self._parse_relation(relation_record))
         return HopResult(nodes=nodes, relations=relations, hop_number=1)
 
+    async def get_labeled_nearby(
+        self,
+        node_name: str,
+        target_label: str,
+        max_hops: int = 3,
+        limit: int = 20,
+    ) -> list[GraphNode]:
+        """Find nodes with a specific label within N hops (undirected)."""
+        query = self._cypher_builder.find_labeled_nearby(
+            node_name, target_label, max_hops, limit
+        )
+        records = await self._execute(query)
+        return [self._parse_node({"_node": r.get("m")}) for r in records if r.get("m")]
+
     async def get_path(
-        self, start: str, end: str, max_hops: int = 3
+        self, start: str, end: str, max_hops: int = 3, directed: bool = True,
     ) -> list[HopResult] | None:
-        query = self._cypher_builder.find_path(start, end, max_hops)
+        query = self._cypher_builder.find_path(start, end, max_hops, directed=directed)
         records = await self._execute(query)
         if not records:
             return None
-        path = records[0].get("path")
-        if path is None:
-            return None
-        return self._parse_path(path)
+        return self._parse_path_rows(records)
 
     async def search_nodes(self, query: str, limit: int = 10) -> list[GraphNode]:
         cypher = CypherQuery(
@@ -118,6 +131,40 @@ class GraphRetriever:
             if node is not None:
                 nodes.append(self._parse_node({"_node": node}))
         return nodes
+
+    async def read_context(self, name: str) -> dict[str, Any]:
+        """Return node properties and source texts from connected edges.
+
+        This is an atomic graph operation used by the reasoning plane to
+        retrieve rich context for an entity, including the original chunk
+        text that mentions it (stored as edge properties during graph build).
+
+        Returns:
+            Dict with ``node`` (GraphNode or None), ``source_texts`` (list
+            of unique source text snippets from connected edges).
+        """
+        node = await self.get_node(name)
+        # Fetch edges connected to this node and collect source_text properties
+        cypher = CypherQuery(
+            query=(
+                "MATCH (n {name: $name})-[r]-() "
+                "WHERE r.source_text IS NOT NULL "
+                "RETURN DISTINCT r.source_text AS source_text, "
+                "r.source_chunk_id AS chunk_id "
+                "LIMIT 10"
+            ),
+            parameters={"name": name},
+        )
+        records = await self._execute(cypher)
+        source_texts: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for record in records:
+            text = record.get("source_text")
+            chunk_id = record.get("chunk_id", "")
+            if isinstance(text, str) and text not in seen:
+                seen.add(text)
+                source_texts.append({"chunk_id": str(chunk_id), "text": text})
+        return {"node": node, "source_texts": source_texts}
 
     async def get_node_context(self, name: str, depth: int = 1) -> list[HopResult]:
         if depth <= 0:
@@ -234,28 +281,46 @@ class GraphRetriever:
             return neighbor_name, node_name
         return node_name, neighbor_name
 
-    def _parse_path(self, path: Any) -> list[HopResult]:
-        nodes: list[Any] = []
-        relationships: list[Any] = []
-        nodes_attr = getattr(path, "nodes", None)
-        if nodes_attr is not None:
-            nodes = list(nodes_attr)
-        elif isinstance(path, dict) and "nodes" in path:
-            nodes = list(path["nodes"])
-        relationships_attr = getattr(path, "relationships", None)
-        if relationships_attr is not None:
-            relationships = list(relationships_attr)
-        elif isinstance(path, dict):
-            relationships = list(path.get("relationships", []))
+    def _parse_path_rows(self, records: list[dict[str, Any]]) -> list[HopResult]:
+        """Parse UNWIND-ed path rows (one record per hop edge)."""
         hop_results: list[HopResult] = []
-        for idx, relation in enumerate(relationships):
+        for record in records:
+            hop_idx = record.get("hop_idx", 0)
+            source_node = record.get("source_node")
+            target_node = record.get("target_node")
+            rel_type = record.get("rel_type", "")
+            rel_props = record.get("rel_props") or {}
+            rel_start = record.get("rel_start")
+            rel_end = record.get("rel_end")
+
             hop_nodes: list[GraphNode] = []
-            if idx < len(nodes):
-                hop_nodes.append(self._parse_node({"_node": nodes[idx]}))
-            if idx + 1 < len(nodes):
-                hop_nodes.append(self._parse_node({"_node": nodes[idx + 1]}))
-            hop_relations = [self._parse_relation({"_relation": relation})]
+            if source_node is not None:
+                hop_nodes.append(self._parse_node({"_node": source_node}))
+            if target_node is not None:
+                hop_nodes.append(self._parse_node({"_node": target_node}))
+
+            # Build relation with source/target from Neo4j direction
+            if rel_start is not None and rel_end is not None:
+                source, target = str(rel_start), str(rel_end)
+            elif source_node and target_node:
+                source = self._node_name(source_node)
+                target = self._node_name(target_node)
+            else:
+                source, target = "", ""
+
+            hop_relations = [
+                GraphRelation(
+                    source=source,
+                    target=target,
+                    relation_type=str(rel_type),
+                    properties=dict(rel_props) if isinstance(rel_props, dict) else {},
+                )
+            ]
             hop_results.append(
-                HopResult(nodes=hop_nodes, relations=hop_relations, hop_number=idx + 1)
+                HopResult(
+                    nodes=hop_nodes,
+                    relations=hop_relations,
+                    hop_number=hop_idx + 1,
+                )
             )
         return hop_results

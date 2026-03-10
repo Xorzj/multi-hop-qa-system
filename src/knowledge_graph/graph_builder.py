@@ -47,6 +47,7 @@ class GraphBuilder:
         self._neo4j_client = neo4j_client
         self._schema = schema or DynamicGraphSchema()
         self._auto_create_missing_nodes = auto_create_missing_nodes
+
     async def build_from_extraction(
         self,
         entities: list[Entity],
@@ -179,6 +180,11 @@ class GraphBuilder:
             relation_source = source_document or triple.source
             if relation_source:
                 properties["source_document"] = relation_source
+            # Propagate chunk-level provenance to edge properties
+            if triple.source:
+                properties.setdefault("source_chunk_id", triple.source)
+            if "source_text" not in properties and triple.source:
+                properties.setdefault("source", triple.source)
 
             try:
                 created = await self.create_relation(
