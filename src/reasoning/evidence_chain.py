@@ -24,6 +24,9 @@ class EvidenceEdge:
     relation_type: str
     confidence: float = 1.0
     hop: int = 0
+    source_chunk_id: str = ""
+    source_text: str = ""
+
 
 @dataclass
 class EvidenceStep:
@@ -95,6 +98,8 @@ class EvidenceChain:
                     "target": edge.target,
                     "relation_type": edge.relation_type,
                     "confidence": edge.confidence,
+                    "source_chunk_id": edge.source_chunk_id,
+                    "source_text": edge.source_text,
                 }
                 for edge in self.edges
             ],
@@ -134,13 +139,22 @@ class EvidenceChain:
         for hop_num in sorted(edges_by_hop):
             lines.append(f'    <hop number="{hop_num}">')
             for edge in edges_by_hop[hop_num]:
-                lines.append(
-                    f"      <edge"
+                edge_attrs = (
                     f" source={quoteattr(edge.source)}"
                     f" relation={quoteattr(edge.relation_type)}"
                     f" target={quoteattr(edge.target)}"
-                    f' confidence="{edge.confidence:.2f}" />'
+                    f' confidence="{edge.confidence:.2f}"'
                 )
+                if edge.source_chunk_id:
+                    edge_attrs += f" chunk_id={quoteattr(edge.source_chunk_id)}"
+                if edge.source_text:
+                    lines.append(f"      <edge{edge_attrs}>")
+                    lines.append(
+                        f"        <source_text>{escape(edge.source_text)}</source_text>"
+                    )
+                    lines.append("      </edge>")
+                else:
+                    lines.append(f"      <edge{edge_attrs} />")
             lines.append("    </hop>")
         lines.append("  </reasoning_path>")
 
@@ -174,8 +188,7 @@ class EvidenceChain:
                     f" {'、'.join(step.nodes_explored)}"
                 )
                 lines.append(
-                    f'    <step hop="{step.hop_number}">'
-                    f"{escape(reasoning)}</step>"
+                    f'    <step hop="{step.hop_number}">{escape(reasoning)}</step>'
                 )
             lines.append("  </reasoning_steps>")
 

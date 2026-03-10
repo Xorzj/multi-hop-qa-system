@@ -14,8 +14,8 @@ from src.reasoning.evidence_chain import (
     EvidenceStep,
 )
 from src.reasoning.reasoning_orchestrator import (
-    ReasoningDecision,
     ReasoningConfig,
+    ReasoningDecision,
     ReasoningOrchestrator,
 )
 
@@ -119,9 +119,7 @@ def test_evidence_chain_to_xml() -> None:
         EvidenceNode(name="时分复用", label="技术"),
     ]
     hop1_edges = [
-        EvidenceEdge(
-            source="SDH", target="DWDM", relation_type="协同", confidence=0.9
-        ),
+        EvidenceEdge(source="SDH", target="DWDM", relation_type="协同", confidence=0.9),
         EvidenceEdge(
             source="SDH", target="时分复用", relation_type="包含", confidence=0.85
         ),
@@ -135,9 +133,7 @@ def test_evidence_chain_to_xml() -> None:
             source="DWDM", target="波分复用", relation_type="属于", confidence=0.95
         ),
     ]
-    builder.add_hop(
-        nodes=hop2_nodes, edges=hop2_edges, reasoning="第二跳探索"
-    )
+    builder.add_hop(nodes=hop2_nodes, edges=hop2_edges, reasoning="第二跳探索")
 
     chain = builder.finalize(end_entity="波分复用")
     xml = chain.to_xml()
@@ -145,19 +141,19 @@ def test_evidence_chain_to_xml() -> None:
     # Structural checks
     assert xml.startswith('<evidence_chain start="SDH"')
     assert 'end="\u6ce2\u5206\u590d\u7528"' in xml or 'end="波分复用"' in xml
-    assert '<reasoning_path>' in xml
+    assert "<reasoning_path>" in xml
     assert '<hop number="1">' in xml
     assert '<hop number="2">' in xml
-    assert '<entities>' in xml
-    assert '<reasoning_steps>' in xml
+    assert "<entities>" in xml
+    assert "<reasoning_steps>" in xml
 
     # Hop 1 edges
-    assert '协同' in xml
-    assert '包含' in xml
+    assert "协同" in xml
+    assert "包含" in xml
 
     # Hop 2 edges
-    assert '属于' in xml
-    assert '波分复用' in xml
+    assert "属于" in xml
+    assert "波分复用" in xml
 
     # Entities
     assert 'name="SDH"' not in xml  # start entity not in nodes list
@@ -280,7 +276,7 @@ async def test_reasoning_orchestrator_reasoning_flow(
     orchestrator = ReasoningOrchestrator(
         graph_retriever=graph_retriever,
         llm_client=llm_client,
-        config=ReasoningConfig(max_hops=3),
+        config=ReasoningConfig(max_hops=3, enable_reflection=False),
     )
 
     chain = await orchestrator.reason(parsed_question)
@@ -293,10 +289,12 @@ async def test_reasoning_orchestrator_reasoning_flow(
     assert chain.total_confidence == pytest.approx(0.48)
 
     graph_retriever.get_neighbors.assert_any_call(
-        node_name="A", relation_type="包含"  # First hop uses relation_hints[0]
+        node_name="A",
+        relation_type="包含",  # First hop uses relation_hints[0]
     )
     graph_retriever.get_neighbors.assert_any_call(
-        node_name="B", relation_type="关联"  # Second hop uses decision's relation_filter
+        node_name="B",
+        relation_type="关联",  # Second hop uses decision's relation_filter
     )
 
 
@@ -417,9 +415,7 @@ async def test_reasoning_orchestrator_logs_warning_for_hallucinated_entities(
     with caplog.at_level(logging.WARNING):
         await orchestrator.reason(parsed_question)
 
-    assert any(
-        "not in graph neighbors" in record.message for record in caplog.records
-    )
+    assert any("not in graph neighbors" in record.message for record in caplog.records)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -552,7 +548,9 @@ async def test_resolve_entities_unresolved() -> None:
         graph_retriever=graph_retriever, llm_client=llm_client
     )
 
-    result = await orchestrator._resolve_entities(["\u4e0d\u5b58\u5728\u7684\u5b9e\u4f53"])
+    result = await orchestrator._resolve_entities(
+        ["\u4e0d\u5b58\u5728\u7684\u5b9e\u4f53"]
+    )
 
     assert result == {}
 
@@ -578,27 +576,25 @@ async def test_resolve_entities_mixed() -> None:
         graph_retriever=graph_retriever, llm_client=llm_client
     )
 
-    result = await orchestrator._resolve_entities(
-        ["SDH", "SDH\u7f51\u7edc", "WDM"]
-    )
+    result = await orchestrator._resolve_entities(["SDH", "SDH\u7f51\u7edc", "WDM"])
 
-    assert result["SDH"] == "SDH"              # exact
-    assert result["SDH\u7f51\u7edc"] == "SDH"    # substring
-    assert result["WDM"] == "\u6ce2\u5206\u590d\u7528"   # LLM
+    assert result["SDH"] == "SDH"  # exact
+    assert result["SDH\u7f51\u7edc"] == "SDH"  # substring
+    assert result["WDM"] == "\u6ce2\u5206\u590d\u7528"  # LLM
 
 
 def test_substring_match_bidirectional() -> None:
     """Test bidirectional substring matching."""
-    orchestrator = ReasoningOrchestrator(
-        graph_retriever=Mock(), llm_client=Mock()
-    )
+    orchestrator = ReasoningOrchestrator(graph_retriever=Mock(), llm_client=Mock())
     nodes = ["SDH", "DWDM", "\u6ce2\u5206\u590d\u7528", "\u5149\u7ea4\u901a\u4fe1"]
 
     # Query is superstring of node name
     assert orchestrator._substring_match("SDH\u7f51\u7edc", nodes) == ["SDH"]
 
     # Query is substring of node name
-    assert orchestrator._substring_match("\u5149\u7ea4", nodes) == ["\u5149\u7ea4\u901a\u4fe1"]
+    assert orchestrator._substring_match("\u5149\u7ea4", nodes) == [
+        "\u5149\u7ea4\u901a\u4fe1"
+    ]
 
     # No match
     assert orchestrator._substring_match("\u4e0d\u5b58\u5728", nodes) == []
@@ -623,7 +619,6 @@ async def test_resolve_entities_empty_graph() -> None:
     result = await orchestrator._resolve_entities(["SDH"])
 
     assert result == {}
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -670,9 +665,7 @@ async def test_execute_hop_falls_back_when_relation_filter_returns_empty() -> No
     assert len(result.relations) == 1
     # Verify two calls: first with filter, second without
     assert graph_retriever.get_neighbors.call_count == 2
-    graph_retriever.get_neighbors.assert_any_call(
-        node_name="SDH", relation_type="使用"
-    )
+    graph_retriever.get_neighbors.assert_any_call(node_name="SDH", relation_type="使用")
     graph_retriever.get_neighbors.assert_any_call(node_name="SDH")
 
 
@@ -941,13 +934,10 @@ async def test_hop_level_retry_when_goal_filter_empty_due_to_wrong_edge() -> Non
     # After hop-level retry, should find DWDM --属于--> 波分复用
     assert len(chain.edges) >= 1
     found = any(
-        e.source == "DWDM"
-        and e.target == "波分复用"
-        and e.relation_type == "属于"
+        e.source == "DWDM" and e.target == "波分复用" and e.relation_type == "属于"
         for e in chain.edges
     )
     assert found, (
-        f"Expected DWDM --属于--> 波分复用 after hop-level retry. "
-        f"Got: {chain.edges}"
+        f"Expected DWDM --属于--> 波分复用 after hop-level retry. Got: {chain.edges}"
     )
     assert any(n.name == "波分复用" for n in chain.nodes)

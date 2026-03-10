@@ -1,13 +1,20 @@
 """Reasoning orchestrator for multi-hop question answering."""
 
+from __future__ import annotations
+
 import json
 import logging
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from src.knowledge_graph.graph_retriever import GraphRelation, GraphRetriever
+from src.knowledge_graph.graph_retriever import GraphNode, GraphRelation, GraphRetriever
+from src.knowledge_graph.graph_retriever import HopResult as GraphHopResult
 from src.llm.base_client import BaseLLMClient, GenerationParams
 from src.qa_engine.question_parser import ParsedQuestion
+
+if TYPE_CHECKING:
+    from src.qa_engine.query_rewriter import QueryPlan, QueryStep
 
 from .evidence_chain import (
     EvidenceChain,
@@ -17,6 +24,19 @@ from .evidence_chain import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ABSTRACT_LABELS = frozenset(
+    {"抽象概念", "治疗概念", "方法", "概念", "疾病类型", "疾病类别", "治疗链条"}
+)
+
+
+def _make_default_step() -> QueryStep:
+    """Create a default find_neighbors step (no type/relation filter)."""
+    from src.qa_engine.query_rewriter import QueryStep
+
+    return QueryStep(
+        action="find_neighbors", direction="both", description="默认查找邻居"
+    )
 
 
 @dataclass
@@ -38,6 +58,16 @@ class ReasoningDecision:
 
 
 @dataclass
+class ReflectionResult:
+    """Result of self-reflection after a hop."""
+
+    action: str  # "continue", "backtrack", "switch"
+    reasoning: str
+    confidence: float
+    suggested_entities: list[str]
+
+
+@dataclass
 class ReasoningConfig:
     """Configuration for reasoning orchestrator."""
 
@@ -45,6 +75,8 @@ class ReasoningConfig:
     enable_cot: bool = True
     min_confidence: float = 0.5
     entity_resolve_max_retries: int = 3
+    enable_reflection: bool = True
+
 
 class ReasoningOrchestrator:
     """Orchestrates multi-hop reasoning over knowledge graph."""
@@ -60,16 +92,245 @@ class ReasoningOrchestrator:
         self._config = config or ReasoningConfig()
         self._logger = logging.getLogger(self.__class__.__name__)
 
-    async def reason(self, parsed_question: ParsedQuestion) -> EvidenceChain:
+    async def reason(
+        self,
+        parsed_question: ParsedQuestion,
+        query_plan: QueryPlan | None = None,
+    ) -> EvidenceChain:
+        # When a QueryPlan is provided, use plan-based reasoning
+        if query_plan is not None:
+            return await self._reason_with_plan(query_plan, parsed_question)
+
+        return await self._reason_original(parsed_question)
+
+    # ── Plan-based reasoning ─────────────────────────────────
+
+    async def _reason_with_plan(
+        self, plan: QueryPlan, parsed_question: ParsedQuestion
+    ) -> EvidenceChain:
+        """Execute reasoning guided by a structured QueryPlan.
+
+        Only resolves plan.start_entities (not type query words).
+        Follows plan steps with Cypher label filtering.
+        Falls back to original reasoning if plan yields no results.
+        """
+        if not plan.start_entities:
+            self._logger.info("QueryPlan has no start_entities, falling back")
+            return await self._reason_legacy(parsed_question)
+
+        # Resolve only start_entities against graph
+        entity_map = await self._resolve_entities(plan.start_entities)
+        resolved = [entity_map[e] for e in plan.start_entities if e in entity_map]
+        if not resolved:
+            self._logger.warning(
+                "No start_entities resolved from plan: %s", plan.start_entities
+            )
+            return await self._reason_legacy(parsed_question)
+
+        current_entities = self._unique_entities(resolved)
+        start_entities_original = list(current_entities)
+        builder = EvidenceChainBuilder(start_entity=current_entities[0])
+
+        if not plan.steps:
+            # No steps defined — fall back to a single generic hop
+            plan_steps = [_make_default_step()]
+        else:
+            plan_steps = plan.steps
+
+        for hop_number, step in enumerate(plan_steps, start=1):
+            if step.action == "find_by_path" and len(current_entities) >= 2:
+                # Chain consecutive entity pairs so intermediate waypoints
+                # are not skipped by shortestPath.
+                all_path_hops: list[
+                    tuple[list[EvidenceNode], list[EvidenceEdge]]
+                ] = []
+                for seg_idx in range(len(current_entities) - 1):
+                    path_hops = await self._retriever.get_path(
+                        current_entities[seg_idx],
+                        current_entities[seg_idx + 1],
+                        directed=False,
+                    )
+                    if path_hops:
+                        for ph in path_hops:
+                            seg_nodes = [
+                                EvidenceNode(
+                                    name=n.name,
+                                    label=n.label,
+                                    properties=n.properties,
+                                    hop=hop_number,
+                                )
+                                for n in ph.nodes
+                            ]
+                            seg_edges = [
+                                EvidenceEdge(
+                                    source=r.source,
+                                    target=r.target,
+                                    relation_type=r.relation_type,
+                                    confidence=r.properties.get(
+                                        "confidence", 1.0
+                                    ),
+                                    source_chunk_id=str(
+                                        r.properties.get("source_chunk_id", "")
+                                    ),
+                                    source_text=str(
+                                        r.properties.get("source_text", "")
+                                    ),
+                                )
+                                for r in ph.relations
+                            ]
+                            all_path_hops.append((seg_nodes, seg_edges))
+                if all_path_hops:
+                    for seg_nodes, seg_edges in all_path_hops:
+                        builder.add_hop(
+                            nodes=seg_nodes,
+                            edges=seg_edges,
+                            reasoning=step.description,
+                        )
+                continue
+
+            # find_neighbors with cascade fallback
+            hop_result = await self._execute_plan_hop(
+                current_entities, step, hop_number
+            )
+
+            nodes, edges = self._convert_hop_result(hop_result, hop_number)
+            builder.add_hop(nodes=nodes, edges=edges, reasoning=step.description)
+
+            # All nodes from this hop become the next frontier
+            next_frontier = [n.name for n in hop_result.nodes if n.name]
+            if next_frontier:
+                current_entities = self._unique_entities(
+                    start_entities_original + next_frontier
+                )
+            else:
+                self._logger.info("Plan hop %d yielded no nodes, stopping", hop_number)
+                break
+
+        result = builder.finalize()
+
+        # If plan produced no edges, fall back to legacy reasoning
+        if not result.edges:
+            self._logger.info(
+                "Plan-based reasoning found no edges, falling back to legacy"
+            )
+            return await self._reason_legacy(parsed_question)
+
+        return result
+
+    async def _execute_plan_hop(
+        self,
+        current_entities: list[str],
+        step: QueryStep,
+        hop_number: int,
+    ) -> HopResult:
+        """Execute a single plan step with cascade fallback.
+
+        Fallback order:
+        1. label + relation filter
+        2. label only
+        3. no filter
+        """
+        hop_nodes: dict[str, EvidenceNode] = {}
+        hop_relations: list[GraphRelation] = []
+
+        for entity in current_entities:
+            if not entity:
+                continue
+
+            # Level 1: label + relation
+            result = await self._retriever.get_neighbors(
+                node_name=entity,
+                relation_type=step.relation_hint,
+                direction=step.direction,
+                neighbor_label=step.target_type,
+            )
+
+            # Level 2: label only (drop relation filter)
+            if not result.nodes and step.relation_hint and step.target_type:
+                self._logger.info(
+                    "Hop %d: no results for '%s' with label='%s' + "
+                    "relation='%s', retrying with label only",
+                    hop_number,
+                    entity,
+                    step.target_type,
+                    step.relation_hint,
+                )
+                result = await self._retriever.get_neighbors(
+                    node_name=entity,
+                    direction=step.direction,
+                    neighbor_label=step.target_type,
+                )
+
+            # Level 3: multi-hop label search (up to 3 hops away)
+            if not result.nodes and step.target_type:
+                self._logger.info(
+                    "Hop %d: no 1-hop results for '%s' with label='%s', "
+                    "trying multi-hop label search",
+                    hop_number,
+                    entity,
+                    step.target_type,
+                )
+                nearby_nodes = await self._retriever.get_labeled_nearby(
+                    entity, step.target_type, max_hops=3,
+                )
+                if nearby_nodes:
+                    # Retrieve actual paths to get edges with source_text
+                    path_nodes: list[GraphNode] = []
+                    path_rels: list[GraphRelation] = []
+                    for found in nearby_nodes:
+                        path_hops = await self._retriever.get_path(
+                            entity, found.name, max_hops=3, directed=False,
+                        )
+                        if path_hops:
+                            for ph in path_hops:
+                                path_nodes.extend(ph.nodes)
+                                path_rels.extend(ph.relations)
+                    all_nodes = nearby_nodes + path_nodes
+                    result = GraphHopResult(
+                        nodes=all_nodes,
+                        relations=path_rels,
+                        hop_number=hop_number,
+                    )
+
+            # Level 4: no filter
+            if not result.nodes and step.target_type:
+                self._logger.info(
+                    "Hop %d: no results for '%s' with label='%s', "
+                    "retrying without filter",
+                    hop_number,
+                    entity,
+                    step.target_type,
+                )
+                result = await self._retriever.get_neighbors(
+                    node_name=entity,
+                    direction=step.direction,
+                )
+
+            for node in result.nodes:
+                if node.name and node.name not in hop_nodes:
+                    hop_nodes[node.name] = EvidenceNode(
+                        name=node.name,
+                        label=node.label,
+                        properties=node.properties,
+                        hop=hop_number,
+                    )
+            hop_relations.extend(result.relations)
+
+        return HopResult(nodes=list(hop_nodes.values()), relations=hop_relations)
+
+    async def _reason_legacy(self, parsed_question: ParsedQuestion) -> EvidenceChain:
+        """Run legacy reasoning without a QueryPlan (backward compat wrapper)."""
+        # Temporarily set query_plan=None and call original logic
+        return await self._reason_original(parsed_question)
+
+    async def _reason_original(self, parsed_question: ParsedQuestion) -> EvidenceChain:
+        """Original multi-hop reasoning logic (without QueryPlan)."""
         if not parsed_question.entities:
             self._logger.info("No entities provided for reasoning")
             return EvidenceChainBuilder(start_entity="").finalize()
 
-        # ── Agentic entity resolution ──────────────────────────
         entity_map = await self._resolve_entities(parsed_question.entities)
-        resolved = [
-            entity_map[e] for e in parsed_question.entities if e in entity_map
-        ]
+        resolved = [entity_map[e] for e in parsed_question.entities if e in entity_map]
         if not resolved:
             self._logger.warning(
                 "No entities could be resolved to graph nodes: %s",
@@ -84,16 +345,15 @@ class ReasoningOrchestrator:
             else None
         )
         builder = EvidenceChainBuilder(start_entity=current_entities[0])
-        # 分离起始实体和目标实体
-        # 第一个实体作为起点，其余实体作为目标
         start_entities = current_entities[:1]
         goal_entities = (
-            set(current_entities[1:])
-            if len(current_entities) > 1
-            else set()
+            set(current_entities[1:]) if len(current_entities) > 1 else set()
         )
-        current_entities = start_entities  # 从第一个实体开始查询
-        seen_entities = set(start_entities)  # 标记起始实体为已见
+        current_entities = start_entities
+        seen_entities = set(start_entities)
+
+        best_evidence: EvidenceChain | None = None
+        best_confidence: float = 0.0
 
         for hop in range(self._config.max_hops):
             hop_number = hop + 1
@@ -109,14 +369,12 @@ class ReasoningOrchestrator:
                 hop_result=hop_result,
             )
 
-            # 过滤 next_entities：只保留实际存在于 hop_result.nodes 的实体
             valid_neighbors = {node.name for node in hop_result.nodes if node.name}
             next_entities = [
                 entity
                 for entity in decision.next_entities
                 if entity and entity not in seen_entities and entity in valid_neighbors
             ]
-            # 记录被过滤掉的幻想实体
             filtered_out = [
                 e for e in decision.next_entities if e and e not in valid_neighbors
             ]
@@ -126,27 +384,19 @@ class ReasoningOrchestrator:
                     filtered_out,
                 )
 
-            # 只添加连接到 next_entities 的边到证据链（保持路径连通性）
             nodes, edges = self._convert_hop_result(hop_result, hop_number)
             if next_entities:
-                # 过滤边：只保留 target 在 next_entities 中的边
                 path_edges = [e for e in edges if e.target in next_entities]
-                # 过滤节点：只保留 next_entities 中的节点
                 path_nodes = [n for n in nodes if n.name in next_entities]
             else:
-                # 最后一跳：过滤到目标实体
                 if goal_entities:
-                    # 只保留连接到目标实体的边（检查双向）
                     path_edges = [
-                        e for e in edges
+                        e
+                        for e in edges
                         if e.target in goal_entities or e.source in goal_entities
                     ]
-                    path_nodes = [
-                        n for n in nodes if n.name in goal_entities
-                    ]
+                    path_nodes = [n for n in nodes if n.name in goal_entities]
 
-                    # 跳级重试：如果关系过滤器导致返回了不相关的边，
-                    # 重新执行该跳（不使用关系过滤器）
                     if not path_edges and relation_filter:
                         self._logger.info(
                             "Goal filter yielded no relevant edges with"
@@ -157,20 +407,14 @@ class ReasoningOrchestrator:
                         hop_result = await self._execute_hop(
                             current_entities, hop_number, ""
                         )
-                        nodes, edges = self._convert_hop_result(
-                            hop_result, hop_number
-                        )
+                        nodes, edges = self._convert_hop_result(hop_result, hop_number)
                         path_edges = [
-                        e for e in edges
-                        if e.target in goal_entities or e.source in goal_entities
+                            e
+                            for e in edges
+                            if e.target in goal_entities or e.source in goal_entities
                         ]
-                        path_nodes = [
-                            n
-                            for n in nodes
-                            if n.name in goal_entities
-                        ]
+                        path_nodes = [n for n in nodes if n.name in goal_entities]
                 else:
-                    # 如果没有目标实体，保留所有边
                     path_edges = edges
                     path_nodes = nodes
             builder.add_hop(
@@ -178,18 +422,74 @@ class ReasoningOrchestrator:
             )
             evidence_chain = builder.finalize()
 
+            if self._config.enable_reflection and hop_number < self._config.max_hops:
+                reflection = await self._reflect_on_hop(
+                    question=parsed_question.original,
+                    evidence=evidence_chain,
+                    hop_number=hop_number,
+                    goal_entities=goal_entities,
+                )
+                self._logger.info(
+                    "Reflection at hop %d: action=%s confidence=%.2f — %s",
+                    hop_number,
+                    reflection.action,
+                    reflection.confidence,
+                    reflection.reasoning[:120],
+                )
+
+                if evidence_chain.total_confidence > best_confidence:
+                    best_confidence = evidence_chain.total_confidence
+                    best_evidence = evidence_chain
+
+                if reflection.action == "backtrack":
+                    self._logger.info(
+                        "Reflection triggered backtrack at hop %d", hop_number
+                    )
+                    if reflection.suggested_entities:
+                        switch_candidates = [
+                            e
+                            for e in reflection.suggested_entities
+                            if e in valid_neighbors and e not in seen_entities
+                        ]
+                        if switch_candidates:
+                            self._logger.info(
+                                "Switching to reflection-suggested entities: %s",
+                                switch_candidates,
+                            )
+                            current_entities = switch_candidates
+                            for e in switch_candidates:
+                                seen_entities.add(e)
+                            relation_filter = None
+                            continue
+                    if best_evidence is not None:
+                        return best_evidence
+                    break
+
+                if reflection.action == "switch" and reflection.suggested_entities:
+                    chain_node_names = {n.name for n in evidence_chain.nodes if n.name}
+                    switch_pool = chain_node_names | valid_neighbors
+                    switch_candidates = [
+                        e
+                        for e in reflection.suggested_entities
+                        if e in switch_pool and e not in seen_entities
+                    ]
+                    if switch_candidates:
+                        self._logger.info(
+                            "Reflection switched direction to: %s",
+                            switch_candidates,
+                        )
+                        next_entities = switch_candidates
+
             if self._should_stop(decision, hop_number, evidence_chain):
                 break
 
             for entity in next_entities:
                 seen_entities.add(entity)
 
-            # 更新当前实体为下一跳的实体
             if next_entities:
                 current_entities = next_entities
                 relation_filter = decision.relation_filter
             else:
-                # 没有有效的下一跳实体，停止推理
                 break
         return builder.finalize()
 
@@ -252,6 +552,91 @@ class ReasoningOrchestrator:
         prompt = self._build_decision_prompt(question, current_evidence, neighbors_text)
         response = await self._llm.generate(prompt)
         return self._parse_decision(response)
+
+    async def _reflect_on_hop(
+        self,
+        question: str,
+        evidence: EvidenceChain,
+        hop_number: int,
+        goal_entities: set[str],
+    ) -> ReflectionResult:
+        """Self-reflection after a hop: evaluate path quality and decide action.
+
+        Returns a ReflectionResult with action (continue/backtrack/switch),
+        reasoning, confidence estimate, and optionally suggested entities
+        to explore if switching direction.
+        """
+        path_desc = evidence.get_path_description()
+        goals_text = "、".join(goal_entities) if goal_entities else "无明确目标"
+        found_goals = goal_entities & {n.name for n in evidence.nodes}
+        found_text = "、".join(found_goals) if found_goals else "尚未到达"
+
+        prompt = (
+            f"你是知识图谱推理质量评估专家。请评估当前推理路径的质量。\n\n"
+            f"原始问题: {question}\n"
+            f"目标实体: {goals_text}\n"
+            f"已到达的目标: {found_text}\n"
+            f"当前路径 (第{hop_number}跳后): {path_desc or '空'}\n"
+            f"路径置信度: {evidence.total_confidence:.2f}\n\n"
+            "请评估：\n"
+            "1. 当前路径是否在接近回答问题？\n"
+            "2. 应该继续当前方向、换一个方向探索、还是回溯？\n"
+            "3. 给出置信度评分 (0-1)\n\n"
+            '返回JSON: {{"action": "continue|backtrack|switch", '
+            '"reasoning": "评估说明", "confidence": 0.8, '
+            '"suggested_entities": ["如果switch，建议探索的实体"]}}'
+        )
+
+        try:
+            response = await self._llm.generate(
+                prompt=prompt,
+                params=GenerationParams(temperature=0.2, max_new_tokens=256),
+            )
+            return self._parse_reflection(response)
+        except Exception as exc:
+            self._logger.warning("Reflection failed: %s", exc)
+            return ReflectionResult(
+                action="continue",
+                reasoning="Reflection failed, continuing",
+                confidence=0.5,
+                suggested_entities=[],
+            )
+
+    def _parse_reflection(self, response: str) -> ReflectionResult:
+        """Parse reflection LLM response into ReflectionResult."""
+        # Strip thinking tags
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", response).strip()
+
+        json_match = re.search(r"\{[^{}]*\}", cleaned, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group())
+                action = data.get("action", "continue")
+                if action not in ("continue", "backtrack", "switch"):
+                    action = "continue"
+                confidence = data.get("confidence", 0.5)
+                if not isinstance(confidence, (int, float)):
+                    confidence = 0.5
+                suggested = data.get("suggested_entities", [])
+                if not isinstance(suggested, list):
+                    suggested = []
+                return ReflectionResult(
+                    action=action,
+                    reasoning=data.get("reasoning", ""),
+                    confidence=float(confidence),
+                    suggested_entities=[
+                        str(e) for e in suggested if isinstance(e, str)
+                    ],
+                )
+            except json.JSONDecodeError:
+                pass
+
+        return ReflectionResult(
+            action="continue",
+            reasoning=cleaned[:200],
+            confidence=0.5,
+            suggested_entities=[],
+        )
 
     def _format_neighbors(self, hop_result: HopResult) -> str:
         lines: list[str] = []
@@ -343,6 +728,8 @@ class ReasoningOrchestrator:
                 target=rel.target,
                 relation_type=rel.relation_type,
                 confidence=rel.properties.get("confidence", 1.0),
+                source_chunk_id=str(rel.properties.get("source_chunk_id", "")),
+                source_text=str(rel.properties.get("source_text", "")),
             )
             for rel in hop_result.relations
         ]
@@ -367,19 +754,20 @@ class ReasoningOrchestrator:
         resolved: str | None
         method: str  # exact, substring, llm_iter_N, unresolved
 
-    async def _resolve_entities(
-        self, entities: list[str]
-    ) -> dict[str, str]:
+    async def _resolve_entities(self, entities: list[str]) -> dict[str, str]:
         """Resolve question entities to graph node names.
 
         Uses an iterative agentic loop:
         1. Exact match against graph nodes
         2. Bidirectional substring match
         3. LLM-assisted resolution (with retry / reformulation)
+
+        Nodes with abstract labels (e.g. "抽象概念") are filtered out.
         """
         # Fetch all graph node names once
         all_nodes = await self._retriever.search_nodes("", limit=500)
         all_node_names = sorted({n.name for n in all_nodes if n.name})
+        node_label_map: dict[str, str] = {n.name: n.label for n in all_nodes if n.name}
 
         if not all_node_names:
             self._logger.warning("Graph is empty, skipping entity resolution")
@@ -395,10 +783,20 @@ class ReasoningOrchestrator:
         for entity in entities:
             if not entity:
                 continue
-            resolution = await self._resolve_single_entity(
-                entity, all_node_names
-            )
+            resolution = await self._resolve_single_entity(entity, all_node_names)
             if resolution.resolved:
+                # Filter out abstract nodes
+                label = node_label_map.get(resolution.resolved, "")
+                if label in _ABSTRACT_LABELS:
+                    self._logger.info(
+                        "Entity '%s' resolved to abstract node '%s' "
+                        "(label=%s), skipping",
+                        entity,
+                        resolution.resolved,
+                        label,
+                    )
+                    continue
+
                 resolved[entity] = resolution.resolved
                 if resolution.original != resolution.resolved:
                     self._logger.info(
@@ -435,9 +833,7 @@ class ReasoningOrchestrator:
         # ── Phase 2: Substring match ──
         candidates = self._substring_match(entity, all_node_names)
         if len(candidates) == 1:
-            return self._EntityResolution(
-                entity, candidates[0], "substring"
-            )
+            return self._EntityResolution(entity, candidates[0], "substring")
 
         # ── Phase 3: Agentic LLM loop ──
         search_history: list[str] = [entity]
@@ -467,9 +863,7 @@ class ReasoningOrchestrator:
                 )
 
                 # Try substring match with reformulated term
-                candidates = self._substring_match(
-                    llm_result, all_node_names
-                )
+                candidates = self._substring_match(llm_result, all_node_names)
                 if len(candidates) == 1:
                     return self._EntityResolution(
                         entity,
@@ -485,18 +879,12 @@ class ReasoningOrchestrator:
         return self._EntityResolution(entity, None, "unresolved")
 
     @staticmethod
-    def _substring_match(
-        query: str, node_names: list[str]
-    ) -> list[str]:
+    def _substring_match(query: str, node_names: list[str]) -> list[str]:
         """Bidirectional substring matching.
 
         Returns nodes where query ⊂ node_name or node_name ⊂ query.
         """
-        return [
-            name
-            for name in node_names
-            if query in name or name in query
-        ]
+        return [name for name in node_names if query in name or name in query]
 
     async def _llm_resolve_entity(
         self,
@@ -506,8 +894,7 @@ class ReasoningOrchestrator:
     ) -> str | None:
         """Ask LLM to map a question entity to a graph node."""
         history_text = (
-            "\n搜索历史（已尝试但未匹配）: "
-            + " → ".join(search_history)
+            "\n搜索历史（已尝试但未匹配）: " + " → ".join(search_history)
             if len(search_history) > 1
             else ""
         )
@@ -515,7 +902,7 @@ class ReasoningOrchestrator:
 
         prompt = (
             "你是知识图谱实体解析助手。将问题中的实体匹配到图谱节点。\n\n"
-            f"问题实体: \"{original_entity}\"\n"
+            f'问题实体: "{original_entity}"\n'
             f"{history_text}\n"
             f"图谱可用节点: [{nodes_text}]\n\n"
             "匹配规则:\n"
