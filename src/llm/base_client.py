@@ -19,11 +19,14 @@ INITIAL_BACKOFF_S = 1.0
 MAX_BACKOFF_S = 60.0
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 529})
 
+
 @dataclass
 class GenerationParams:
     max_new_tokens: int = 512
     temperature: float = 0.7
     top_p: float = 0.9
+    system_message: str | None = None
+    enable_thinking: bool = True
 
 
 class BaseLLMClient(ABC):
@@ -84,11 +87,17 @@ async def post_with_retry(
             status = exc.response.status_code
             if status in _RETRYABLE_STATUS_CODES and attempt < max_retries:
                 wait = _compute_backoff(
-                    attempt, initial_backoff, exc.response.headers.get("retry-after"),
+                    attempt,
+                    initial_backoff,
+                    exc.response.headers.get("retry-after"),
                 )
                 logger.warning(
                     "%s %d, retry %d/%d in %.1fs",
-                    provider_name, status, attempt + 1, max_retries, wait,
+                    provider_name,
+                    status,
+                    attempt + 1,
+                    max_retries,
+                    wait,
                 )
                 last_exc = exc
                 await asyncio.sleep(wait)
@@ -99,8 +108,11 @@ async def post_with_retry(
                 wait = _compute_backoff(attempt, initial_backoff)
                 logger.warning(
                     "%s connection error (%s), retry %d/%d in %.1fs",
-                    provider_name, type(exc).__name__,
-                    attempt + 1, max_retries, wait,
+                    provider_name,
+                    type(exc).__name__,
+                    attempt + 1,
+                    max_retries,
+                    wait,
                 )
                 last_exc = exc
                 await asyncio.sleep(wait)
@@ -123,6 +135,6 @@ def _compute_backoff(
             return max(float(retry_after_header), 0.5)
         except ValueError:
             pass
-    backoff = min(initial * (2 ** attempt), MAX_BACKOFF_S)
+    backoff = min(initial * (2**attempt), MAX_BACKOFF_S)
     jitter = random.uniform(0, min(backoff * 0.5, 2.0))  # noqa: S311
     return backoff + jitter

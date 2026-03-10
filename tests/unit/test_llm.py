@@ -289,11 +289,7 @@ async def test_openai_chat_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result == "pong"
     assert fake_httpx.last_request is not None
     assert fake_httpx.last_request["json"]["model"] == "gpt-4o-mini"
-    assert (
-        fake_httpx.last_request["headers"]["Authorization"]
-        == "Bearer test-key"
-    )
-
+    assert fake_httpx.last_request["headers"]["Authorization"] == "Bearer test-key"
 
 
 @pytest.mark.asyncio
@@ -421,7 +417,10 @@ async def test_openai_chat_list_content(
         generation=GenerationConfig(max_new_tokens=128, temperature=0.3, top_p=0.8),
     )
     client = OpenAIClient(config)
-    list_content = [{"type": "text", "text": "hello "}, {"type": "text", "text": "world"}]
+    list_content = [
+        {"type": "text", "text": "hello "},
+        {"type": "text", "text": "world"},
+    ]
     response = FakeResponse({"choices": [{"message": {"content": list_content}}]})
     fake_httpx = FakeHttpxModule(response)
     monkeypatch.setattr(client, "_load_httpx", lambda: fake_httpx)
@@ -473,6 +472,7 @@ def test_openai_resolve_appends_chat_completions() -> None:
     assert endpoint == "https://example.com/v1/chat/completions"
     assert key == "sk-test"
 
+
 def test_openai_timeout_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "not-a-number")
     config = LLMConfig(
@@ -508,7 +508,10 @@ class _FakeResponse:
     """Minimal fake httpx.Response for testing retry logic."""
 
     def __init__(
-        self, status_code: int = 200, text: str = "", headers: dict | None = None,
+        self,
+        status_code: int = 200,
+        text: str = "",
+        headers: dict | None = None,
     ) -> None:
         self.status_code = status_code
         self.text = text
@@ -594,17 +597,23 @@ class TestPostWithRetry:
 
         fake = _make_fake_httpx([_FakeResponse(200)])
         resp = await post_with_retry(
-            fake, "http://api/v1/chat",
-            json={}, headers={}, timeout=30.0,
+            fake,
+            "http://api/v1/chat",
+            json={},
+            headers={},
+            timeout=30.0,
         )
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_429_retries_then_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from src.llm.base_client import post_with_retry
-
+    async def test_429_retries_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Make backoff instant for testing
         import asyncio as _asyncio
+
+        from src.llm.base_client import post_with_retry
+
         sleep_calls: list[float] = []
         original_sleep = _asyncio.sleep
 
@@ -614,14 +623,19 @@ class TestPostWithRetry:
 
         monkeypatch.setattr(_asyncio, "sleep", fast_sleep)
 
-        fake = _make_fake_httpx([
-            _FakeResponse(429, text="rate limited"),
-            _FakeResponse(429, text="rate limited"),
-            _FakeResponse(200, text="ok"),
-        ])
+        fake = _make_fake_httpx(
+            [
+                _FakeResponse(429, text="rate limited"),
+                _FakeResponse(429, text="rate limited"),
+                _FakeResponse(200, text="ok"),
+            ]
+        )
         resp = await post_with_retry(
-            fake, "http://api/v1/chat",
-            json={}, headers={}, timeout=30.0,
+            fake,
+            "http://api/v1/chat",
+            json={},
+            headers={},
+            timeout=30.0,
             initial_backoff=1.0,
         )
         assert resp.status_code == 200
@@ -631,9 +645,9 @@ class TestPostWithRetry:
 
     @pytest.mark.asyncio
     async def test_429_exhausts_retries(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from src.llm.base_client import post_with_retry
-
         import asyncio as _asyncio
+
+        from src.llm.base_client import post_with_retry
 
         async def fast_sleep(seconds: float) -> None:
             pass
@@ -643,8 +657,11 @@ class TestPostWithRetry:
         fake = _make_fake_httpx([_FakeResponse(429, text="rate limited")])
         with pytest.raises(_FakeHTTPStatusError):
             await post_with_retry(
-                fake, "http://api/v1/chat",
-                json={}, headers={}, timeout=30.0,
+                fake,
+                "http://api/v1/chat",
+                json={},
+                headers={},
+                timeout=30.0,
                 max_retries=3,
             )
 
@@ -655,39 +672,49 @@ class TestPostWithRetry:
         fake = _make_fake_httpx([_FakeResponse(401, text="unauthorized")])
         with pytest.raises(_FakeHTTPStatusError) as exc_info:
             await post_with_retry(
-                fake, "http://api/v1/chat",
-                json={}, headers={}, timeout=30.0,
+                fake,
+                "http://api/v1/chat",
+                json={},
+                headers={},
+                timeout=30.0,
             )
         assert exc_info.value.response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_500_is_retryable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from src.llm.base_client import post_with_retry
-
         import asyncio as _asyncio
+
+        from src.llm.base_client import post_with_retry
 
         async def fast_sleep(seconds: float) -> None:
             pass  # instant, no real sleep
 
         monkeypatch.setattr(_asyncio, "sleep", fast_sleep)
 
-        fake = _make_fake_httpx([
-            _FakeResponse(500, text="server error"),
-            _FakeResponse(200, text="ok"),
-        ])
+        fake = _make_fake_httpx(
+            [
+                _FakeResponse(500, text="server error"),
+                _FakeResponse(200, text="ok"),
+            ]
+        )
         resp = await post_with_retry(
-            fake, "http://api/v1/chat",
-            json={}, headers={}, timeout=30.0,
+            fake,
+            "http://api/v1/chat",
+            json={},
+            headers={},
+            timeout=30.0,
         )
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_retry_after_header_respected(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        import asyncio as _asyncio
+
         from src.llm.base_client import post_with_retry
 
-        import asyncio as _asyncio
         sleep_calls: list[float] = []
 
         async def fast_sleep(seconds: float) -> None:
@@ -695,13 +722,18 @@ class TestPostWithRetry:
 
         monkeypatch.setattr(_asyncio, "sleep", fast_sleep)
 
-        fake = _make_fake_httpx([
-            _FakeResponse(429, headers={"retry-after": "3.5"}),
-            _FakeResponse(200),
-        ])
+        fake = _make_fake_httpx(
+            [
+                _FakeResponse(429, headers={"retry-after": "3.5"}),
+                _FakeResponse(200),
+            ]
+        )
         await post_with_retry(
-            fake, "http://api/v1/chat",
-            json={}, headers={}, timeout=30.0,
+            fake,
+            "http://api/v1/chat",
+            json={},
+            headers={},
+            timeout=30.0,
         )
         assert len(sleep_calls) == 1
         assert sleep_calls[0] == 3.5  # exact Retry-After value

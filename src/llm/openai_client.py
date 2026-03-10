@@ -33,7 +33,11 @@ class OpenAIClient(BaseLLMClient):
         prompt: str,
         params: GenerationParams | None = None,
     ) -> str:
-        messages = [{"role": "user", "content": prompt}]
+        messages: list[dict[str, str]] = []
+        resolved = params or GenerationParams()
+        if resolved.system_message:
+            messages.append({"role": "system", "content": resolved.system_message})
+        messages.append({"role": "user", "content": prompt})
         return await self.chat(messages, params)
 
     async def chat(
@@ -61,7 +65,7 @@ class OpenAIClient(BaseLLMClient):
         httpx_module = self._load_httpx()
         endpoint, api_key = self._resolve_endpoint_and_key()
         resolved_params = params or GenerationParams()
-        payload = {
+        payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "max_tokens": resolved_params.max_new_tokens,
@@ -97,13 +101,23 @@ class OpenAIClient(BaseLLMClient):
 
         try:
             data = response.json()
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason")
             raw_content = message.get("content")
             content = raw_content if isinstance(raw_content, str) else ""
-            # Thinking models put output in reasoning_content
+            # Thinking models: only fallback to reasoning_content when
+            # finish_reason is NOT "length" (truncated mid-reasoning).
             if not content.strip():
-                fallback = message.get("reasoning_content")
-                content = fallback if isinstance(fallback, str) else ""
+                if finish_reason == "length":
+                    logger.warning(
+                        "Model exhausted token budget during reasoning "
+                        "(finish_reason=length, content is empty). "
+                        "Consider disabling thinking or increasing max_tokens.",
+                    )
+                else:
+                    fallback = message.get("reasoning_content")
+                    content = fallback if isinstance(fallback, str) else ""
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             logger.error(
                 "Unexpected OpenAI API response format",
